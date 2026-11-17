@@ -19,3 +19,6 @@ models/
 .DS_Store
 Thumbs.db
 *.log
+
+# Provisioned native binaries (downloaded by scripts/setup-mpv.ps1)
+native/mpv/

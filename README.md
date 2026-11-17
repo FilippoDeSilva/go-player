@@ -11,23 +11,23 @@ features are unavailable.
 
 ## Tech stack
 
-| Layer        | Choice                                              |
-| ------------ | --------------------------------------------------- |
-| Shell        | Tauri 2                                             |
-| Frontend     | Solid + TypeScript, Tailwind CSS v4                  |
-| Core logic   | Rust workspace (`crates/`)                          |
-| Playback     | libmpv (`go-media` abstraction) — see ADR-0001       |
-| Speech-to-text| whisper.cpp (planned)                               |
-| Persistence  | SQLite (planned)                                    |
-| Package mgrs | pnpm (JS) + cargo (Rust), versions pinned via mise  |
+| Layer          | Choice                                                     |
+| -------------- | ---------------------------------------------------------- |
+| Shell          | Tauri 2                                                    |
+| Frontend       | Solid + TypeScript, Tailwind CSS v4, Kobalte UI primitives |
+| Core logic     | Rust workspace (`crates/`)                                 |
+| Playback       | libmpv (`go-media` abstraction) — see ADR-0001             |
+| Speech-to-text | whisper.cpp (planned)                                      |
+| Persistence    | SQLite (planned)                                           |
+| Package mgrs   | pnpm (JS) + cargo (Rust), versions pinned via mise         |
 
 Desktop (Windows, Linux, macOS) is the first target; Android/iOS come
 later through Tauri 2 mobile.
 
 ## Prerequisites
 
-- **Windows:** Visual Studio 2022 Build Tools with the *Desktop
-  development with C++* workload (provides the MSVC linker + Windows
+- **Windows:** Visual Studio 2022 Build Tools with the _Desktop
+  development with C++_ workload (provides the MSVC linker + Windows
   SDK). Node.js, Rust, and pnpm are installed by the setup script.
 - **Linux/macOS:** Rust, Node.js 22+, pnpm. Tauri system libraries are
   listed in `scripts/setup.sh`.

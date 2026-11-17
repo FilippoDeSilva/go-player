@@ -1,4 +1,5 @@
 # Keep a Changelog — https://keepachangelog.com
+
 # Version headings are generated from git tags; do not edit released sections.
 
 ## [Unreleased]

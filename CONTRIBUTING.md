@@ -12,12 +12,12 @@ AI-assisted contributions are welcome — the repo ships an agent skill at
 
 ## Prerequisites
 
-| Tool     | Version / notes                                        |
-| -------- | ------------------------------------------------------ |
-| Rust     | Pinned in `rust-toolchain.toml` (MSVC on Windows)      |
-| Node.js  | Pinned in `mise.toml`                                  |
-| pnpm     | Pinned in `mise.toml` — run `pnpm install` at the root |
-| Windows  | VS 2022 Build Tools, *Desktop development with C++*    |
+| Tool    | Version / notes                                        |
+| ------- | ------------------------------------------------------ |
+| Rust    | Pinned in `rust-toolchain.toml` (MSVC on Windows)      |
+| Node.js | Pinned in `mise.toml`                                  |
+| pnpm    | Pinned in `mise.toml` — run `pnpm install` at the root |
+| Windows | VS 2022 Build Tools, _Desktop development with C++_    |
 
 One-command setup (idempotent): `./scripts/setup.ps1` (Windows) or
 `./scripts/setup.sh` (Linux/macOS). `mise install` pins Node/pnpm.

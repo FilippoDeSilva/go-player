@@ -24,7 +24,7 @@ Treat these as the current intended direction, not proof that every integration 
 
 - **Application shell:** Tauri 2 is the preferred cross-platform shell candidate.
 - **Frontend:** Solid + TypeScript (pnpm workspace).
-- **Styling:** Tailwind CSS v4 with a reusable, custom design system.
+- **Styling:** Tailwind CSS v4 with a reusable, custom design system. UI primitives are built on Kobalte (`@kobalte/core`) — the Solid equivalent of Radix/shadcn — styled with Tailwind.
 - **Shared application/core logic:** Rust.
 - **Media playback:** libmpv via Rust bindings (decided in `docs/decisions/0001-playback-engine.md`); GStreamer evaluated and rejected for v1, retained only as a fallback.
 - **Media utilities:** FFmpeg may be used selectively for inspection, extraction, conversion, or compatibility gaps.

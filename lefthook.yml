@@ -1,0 +1,27 @@
+# Lefthook git hooks — fast staged-file checks on commit,
+# heavier verification on push. Install once with: pnpm exec lefthook install
+# Binaries are invoked directly from node_modules/.bin so hooks work even
+# when no package manager is on PATH (e.g. minimal CI shells).
+pre-commit:
+  parallel: true
+  commands:
+    prettier:
+      glob: "*.{ts,tsx,js,jsx,json,css,md,yml,yaml}"
+      run: ./node_modules/.bin/prettier --write {staged_files}
+      stage_fixed: true
+
+    rustfmt:
+      glob: "*.rs"
+      run: cargo fmt --all
+      stage_fixed: true
+
+pre-push:
+  commands:
+    frontend-build:
+      run: cd apps/app && ./node_modules/.bin/vite build
+
+    contracts-typecheck:
+      run: cd packages/contracts && ./node_modules/.bin/tsc --noEmit
+
+    rust-test:
+      run: cargo test --workspace

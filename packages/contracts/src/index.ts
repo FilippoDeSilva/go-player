@@ -22,19 +22,19 @@ export interface MediaInfo {
   tracks: TrackInfo[];
 }
 
-export type PlaybackStatus =
-  | "stopped"
-  | "playing"
-  | "paused"
-  | "ended"
-  | "error";
+export type PlaybackStatus = "stopped" | "playing" | "paused" | "ended" | "error";
 
 export interface PlaybackState {
   status: PlaybackStatus;
   /** Position in milliseconds. */
-  position: number;
+  position_ms: number;
   /** Duration in milliseconds, or null if unknown. */
-  duration: number | null;
+  duration_ms: number | null;
+}
+
+export interface MediaInfoDto {
+  path: string;
+  duration_ms: number | null;
 }
 
 export type MediaBackend = "mpv" | "other";
@@ -42,4 +42,11 @@ export type MediaBackend = "mpv" | "other";
 export interface MediaBackendInfo {
   backend: MediaBackend;
   name: string;
+}
+
+export interface SubtitleSummary {
+  cue_count: number;
+  language: string | null;
+  /** End time of the last cue, in milliseconds. */
+  duration_ms: number;
 }

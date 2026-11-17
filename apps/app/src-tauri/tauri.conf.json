@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "go-player",
-        "width": 800,
-        "height": 600
+        "title": "Go Player",
+        "width": 1100,
+        "height": 700,
+        "minWidth": 640,
+        "minHeight": 420,
+        "decorations": false
       }
     ],
     "security": {
