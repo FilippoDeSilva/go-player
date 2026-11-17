@@ -62,36 +62,3 @@ jobs:
           # signed updater artifacts:
           # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-  release-notes:
-    name: Draft release notes
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate release notes
-        run: |
-          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
-          if [ -n "$PREV" ]; then
-            RANGE="$PREV..HEAD"
-          else
-            RANGE="HEAD"
-          fi
-          {
-            echo "## What's Changed"
-            git log --pretty=format:"- %s (%h)" $RANGE | grep -v "^- Merge" || true
-            echo ""
-            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV:-initial}...${{ github.ref_name }}"
-          } > release_notes.md
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          body_path: release_notes.md
-          draft: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

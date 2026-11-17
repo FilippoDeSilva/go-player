@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $TargetDir  = Join-Path $RepoRoot 'native\mpv\x86_64-pc-windows-msvc'
-$BundleDir  = Join-Path $RepoRoot 'apps\app\src-tauri\bundle-resources'
+$BundleDir  = Join-Path $RepoRoot 'apps\app\src-tauri\bundle-resources\windows'
 New-Item -ItemType Directory -Force -Path $BundleDir | Out-Null
 $ApiRepo    = 'mpv-player/mpv'
 
