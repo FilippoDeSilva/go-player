@@ -14,8 +14,9 @@ struct AppState {
     engine: Mutex<Option<MpvPlaybackEngine>>,
     #[cfg(windows)]
     video_hwnd: Mutex<Option<video_surface::VideoSurfaceHwnd>>,
+    /// Whether mpv's window should be visible (video vs audio).
     #[cfg(windows)]
-    parent_hwnd: Mutex<Option<isize>>,
+    video_shown: Mutex<bool>,
 }
 
 #[derive(Serialize)]
@@ -84,17 +85,54 @@ fn load_subtitles(path: String) -> Result<SubtitleSummary, String> {
     })
 }
 
-/// Video region in client coords: below the 40px titlebar, above the
-/// 56px control bar, full width.
+/// mpv creates its own child window under the `wid` parent (the main
+/// window). Poll for it on a background thread — it only appears once
+/// the VO initializes after `loadfile` — then pin it to the bottom of
+/// the z-order (below the transparent webview), size it to the full
+/// client area, and apply the current visibility.
 #[cfg(windows)]
-fn video_rect(client: windows::Win32::Foundation::RECT) -> windows::Win32::Foundation::RECT {
-    use windows::Win32::Foundation::RECT;
-    RECT {
-        left: 0,
-        top: 40,
-        right: client.right,
-        bottom: (client.bottom - 56).max(40),
+fn ensure_mpv_surface(app: &tauri::AppHandle) {
+    {
+        let state = app.state::<AppState>();
+        if state
+            .video_hwnd
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
+        {
+            return;
+        }
     }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = window.hwnd() else { return };
+    let parent = hwnd.0 as isize; // HWND is !Send; rebuild inside the thread
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let parent = windows::Win32::Foundation::HWND(parent as *mut _);
+        for _ in 0..100 {
+            if let Some(child) = unsafe { video_surface::find_mpv_child(parent) } {
+                let surface = video_surface::VideoSurfaceHwnd(child.0 as isize);
+                let state = app.state::<AppState>();
+                let show = state.video_shown.lock().map(|g| *g).unwrap_or(false);
+                unsafe {
+                    video_surface::set_bottom(surface);
+                    video_surface::resize_to_parent(parent, surface);
+                    video_surface::bring_webview_to_top(parent);
+                    video_surface::set_visible(surface, show);
+                    video_surface::dump_children(parent);
+                }
+                eprintln!("[go-player] mpv child window: {}", child.0 as isize);
+                if let Ok(mut g) = state.video_hwnd.lock() {
+                    *g = Some(surface);
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!("[go-player] warning: mpv child window not found after 5s");
+    });
 }
 
 #[tauri::command]
@@ -102,6 +140,7 @@ fn open_media(
     window: Window,
     state: State<AppState>,
     path: String,
+    has_video: bool,
 ) -> Result<MediaInfoDto, String> {
     let src = PathBuf::from(&path);
     let mut guard = state.engine.lock().map_err(|e| e.to_string())?;
@@ -109,25 +148,23 @@ fn open_media(
     if guard.is_none() {
         #[cfg(windows)]
         {
+            // Pass the main window HWND: mpv embeds by creating its own
+            // child window under it, which we later pin below the
+            // transparent webview (see ensure_mpv_surface).
             let hwnd = window.hwnd().map_err(|e| format!("hwnd failed: {e}"))?;
             let parent = windows::Win32::Foundation::HWND(hwnd.0);
-            let client =
-                unsafe { video_surface::client_rect(parent) }.ok_or("failed to get client rect")?;
-            eprintln!("[go-player] client rect: {client:?}");
-            let surface =
-                unsafe { video_surface::create_video_surface(parent, video_rect(client)) }
-                    .ok_or("failed to create video surface")?;
-            eprintln!("[go-player] video surface hwnd: {}", surface.0);
-            *state.video_hwnd.lock().map_err(|e| e.to_string())? = Some(surface);
-            *state.parent_hwnd.lock().map_err(|e| e.to_string())? = Some(parent.0 as isize);
-            let engine = MpvPlaybackEngine::with_video_surface(surface.0)
+            let engine = MpvPlaybackEngine::with_video_surface(parent.0 as isize)
                 .map_err(|e| format!("mpv init failed: {e}"))?;
-            eprintln!("[go-player] mpv engine initialized");
+            eprintln!(
+                "[go-player] mpv engine initialized (wid={})",
+                parent.0 as isize
+            );
             *guard = Some(engine);
         }
         #[cfg(not(windows))]
         {
             let _ = &window;
+            let _ = has_video;
             let engine =
                 MpvPlaybackEngine::new_headless().map_err(|e| format!("mpv init failed: {e}"))?;
             *guard = Some(engine);
@@ -139,6 +176,20 @@ fn open_media(
         .open(&src)
         .map_err(|e| format!("open failed for {}: {e}", src.display()))?;
     eprintln!("[go-player] opened {}", src.display());
+
+    #[cfg(windows)]
+    {
+        if let Ok(mut g) = state.video_shown.lock() {
+            *g = has_video;
+        }
+        ensure_mpv_surface(window.app_handle());
+        if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
+            unsafe { video_surface::set_visible(surface, has_video) };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = has_video;
+
     Ok(MediaInfoDto {
         path: info.path.display().to_string(),
         duration_ms: info.duration.map(|d| d.as_millis() as u64),
@@ -190,7 +241,17 @@ fn media_pause(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn media_stop(state: State<AppState>) -> Result<(), String> {
-    with_engine(&state, |e| e.stop())
+    with_engine(&state, |e| e.stop())?;
+    #[cfg(windows)]
+    {
+        if let Ok(mut g) = state.video_shown.lock() {
+            *g = false;
+        }
+        if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
+            unsafe { video_surface::set_visible(surface, false) };
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -198,29 +259,51 @@ fn media_seek(state: State<AppState>, position_ms: u64) -> Result<(), String> {
     with_engine(&state, |e| e.seek(Duration::from_millis(position_ms)))
 }
 
-fn reposition_video_surface(state: &AppState) {
+#[tauri::command]
+fn media_set_volume(state: State<AppState>, volume: f64) -> Result<(), String> {
+    let guard = state.engine.lock().map_err(|e| e.to_string())?;
+    guard
+        .as_ref()
+        .ok_or("no media loaded")?
+        .set_volume(volume)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn media_set_muted(state: State<AppState>, muted: bool) -> Result<(), String> {
+    let guard = state.engine.lock().map_err(|e| e.to_string())?;
+    guard
+        .as_ref()
+        .ok_or("no media loaded")?
+        .set_muted(muted)
+        .map_err(|e| e.to_string())
+}
+
+fn reposition_video_surface(state: &AppState, window: &Window) {
     #[cfg(windows)]
     {
-        let (Some(surface), Some(parent)) = (
-            *state.video_hwnd.lock().unwrap(),
-            *state.parent_hwnd.lock().unwrap(),
-        ) else {
+        let Some(surface) = *state.video_hwnd.lock().unwrap() else {
             return;
         };
-        let parent = windows::Win32::Foundation::HWND(parent as *mut _);
-        if let Some(client) = unsafe { video_surface::client_rect(parent) } {
-            unsafe { video_surface::resize_video_surface(surface, video_rect(client)) };
+        let Ok(hwnd) = window.hwnd() else { return };
+        let parent = windows::Win32::Foundation::HWND(hwnd.0);
+        // Re-assert z-order (mpv below, webview on top) and match the
+        // new client size.
+        unsafe {
+            video_surface::set_bottom(surface);
+            video_surface::resize_to_parent(parent, surface);
+            video_surface::bring_webview_to_top(parent);
         }
     }
     #[cfg(not(windows))]
     {
-        let _ = state;
+        let _ = (state, window);
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
@@ -233,12 +316,15 @@ pub fn run() {
             media_pause,
             media_stop,
             media_seek,
+            media_set_volume,
+            media_set_muted,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Resized(_) = event {
-                reposition_video_surface(&window.state::<AppState>());
+                reposition_video_surface(&window.state::<AppState>(), window);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|_window, _event| {});
 }

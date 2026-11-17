@@ -52,8 +52,21 @@ impl MpvPlaybackEngine {
             init.set_property("wid", wid as i64)?;
             init.set_property("idle", "yes")?;
             init.set_property("terminal", "no")?;
+            init.set_property("input-vo-keyboard", "no")?;
             Ok(())
         })
+    }
+
+    /// Set volume as a percentage (0–100).
+    pub fn set_volume(&self, percent: f64) -> MediaResult<()> {
+        self.mpv
+            .set_property("volume", percent.clamp(0.0, 100.0))
+            .map_err(mpv_err)
+    }
+
+    /// Mute or unmute playback.
+    pub fn set_muted(&self, muted: bool) -> MediaResult<()> {
+        self.mpv.set_property("mute", muted).map_err(mpv_err)
     }
 
     fn build<F>(configure: F) -> MediaResult<Self>

@@ -11,7 +11,7 @@
   --text: #fafafa;
   --text-dim: #a1a1aa;
   --text-faint: #52525b;
-  --accent: #34d399;
+  --accent: #f97316;
   --hover: rgba(255, 255, 255, 0.08);
   --scrim: rgba(0, 0, 0, 0.55);
 }
@@ -25,7 +25,7 @@
   --text: #fafafa;
   --text-dim: #a1a1aa;
   --text-faint: #52525b;
-  --accent: #34d399;
+  --accent: #f97316;
   --hover: rgba(255, 255, 255, 0.1);
   --scrim: rgba(0, 0, 0, 0.7);
 }
@@ -49,7 +49,10 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: var(--bg);
+  /* Transparent: mpv's native window sits below the webview and shows
+     through wherever the app paints nothing. Empty/audio states paint
+     their own opaque background. */
+  background: transparent;
   color: var(--text);
   font-family:
     Inter,
@@ -161,4 +164,15 @@ input[type="range"]::-moz-range-thumb {
 [data-media-kind="audio"] input[type="range"]::-moz-range-thumb {
   background: #f97316;
   box-shadow: 0 0 0 4px rgba(249, 115, 22, 0.2);
+}
+
+/* Progress fill for seek bar */
+input[type="range"].seek {
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--progress, 0%),
+    var(--hover) var(--progress, 0%),
+    var(--hover) 100%
+  ) !important;
 }
