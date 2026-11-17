@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Provision libmpv binaries for go-media-mpv (Windows x86_64).
@@ -24,6 +24,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $TargetDir  = Join-Path $RepoRoot 'native\mpv\x86_64-pc-windows-msvc'
+$BundleDir  = Join-Path $RepoRoot 'apps\app\src-tauri\bundle-resources'
+New-Item -ItemType Directory -Force -Path $BundleDir | Out-Null
 $ApiRepo    = 'mpv-player/mpv'
 
 function Resolve-MpvVersion {
@@ -52,7 +54,8 @@ $marker = Join-Path $TargetDir '.version'
 
 if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $tag) -and
     (Test-Path (Join-Path $TargetDir 'mpv.lib'))) {
-    Write-Host "libmpv $tag already provisioned at $TargetDir — nothing to do."
+    Copy-Item (Join-Path $TargetDir 'libmpv-2.dll') (Join-Path $BundleDir 'libmpv-2.dll') -Force
+    Write-Host "libmpv $tag already provisioned at $TargetDir — staged for bundling."
     exit 0
 }
 
@@ -78,6 +81,10 @@ $src = if ($inner -and (Test-Path (Join-Path $inner.FullName 'libmpv-2.dll'))) {
 
 Copy-Item (Join-Path $src '*') $TargetDir -Recurse -Force
 Set-Content -Path $marker -Value $tag
+
+# Stage runtime DLL for Tauri bundling (tauri.windows.conf.json)
+Copy-Item (Join-Path $TargetDir 'libmpv-2.dll') (Join-Path $BundleDir 'libmpv-2.dll') -Force
+Write-Host "  staged libmpv-2.dll -> $BundleDir"
 
 # --- Generate mpv.lib (MSVC import library) if missing ---------------------
 $libPath = Join-Path $TargetDir 'mpv.lib'

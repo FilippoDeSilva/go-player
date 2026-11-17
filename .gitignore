@@ -22,3 +22,6 @@ Thumbs.db
 
 # Provisioned native binaries (downloaded by scripts/setup-mpv.ps1)
 native/mpv/
+
+# Staged native runtime for bundling (produced by scripts/setup-mpv.*)
+apps/app/src-tauri/bundle-resources/
