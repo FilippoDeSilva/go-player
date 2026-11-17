@@ -39,6 +39,11 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Homebrew on Apple Silicon installs libs to /opt/homebrew/lib, which
+      # the linker/loader don't search by default. Harmless on other OSes.
+      LIBRARY_PATH: /opt/homebrew/lib
+      DYLD_FALLBACK_LIBRARY_PATH: /opt/homebrew/lib
     steps:
       - uses: actions/checkout@v4
 
