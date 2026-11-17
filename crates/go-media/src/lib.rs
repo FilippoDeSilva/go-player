@@ -46,7 +46,7 @@ pub struct TrackInfo {
     pub is_selected: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MediaMetadata {
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -54,19 +54,6 @@ pub struct MediaMetadata {
     pub year: Option<u32>,
     pub genre: Option<String>,
     pub comment: Option<String>,
-}
-
-impl Default for MediaMetadata {
-    fn default() -> Self {
-        Self {
-            title: None,
-            artist: None,
-            album: None,
-            year: None,
-            genre: None,
-            comment: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

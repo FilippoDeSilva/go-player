@@ -3,9 +3,9 @@
 //! ## Status
 //!
 //! Headless playback works: open / play / pause / stop / seek / track
-//! selection / state queries. Video output is currently disabled
-//! (`vo=null`) — the native surface/texture integration is the next
-//! milestone (see ADR-0001 consequences).
+//! selection / state queries. `with_video_surface` embeds video into a
+//! native window via mpv's `wid` option; `new_headless` uses `vo=null`
+//! for tests and audio-only probing.
 //!
 //! ## Native dependency
 //!
@@ -18,7 +18,7 @@ use go_media::{
     MediaBackend, MediaError, MediaInfo, MediaResult, PlaybackEngine, PlaybackState,
     PlaybackStatus, TrackKind,
 };
-use libmpv2::Mpv;
+use libmpv2::{Mpv, events};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -53,6 +53,10 @@ impl MpvPlaybackEngine {
             init.set_property("idle", "yes")?;
             init.set_property("terminal", "no")?;
             init.set_property("input-vo-keyboard", "no")?;
+            // Keep mpv's child window alive at end-of-file so the last
+            // frame stays on screen instead of the surface going blank.
+            init.set_property("keep-open", "yes")?;
+            init.set_property("force-window", "yes")?;
             Ok(())
         })
     }
@@ -74,7 +78,50 @@ impl MpvPlaybackEngine {
         F: FnOnce(libmpv2::MpvInitializer) -> libmpv2::Result<()>,
     {
         let mpv = Mpv::with_initializer(configure).map_err(engine_err)?;
+        // FileLoaded lets open() wait until mpv has actually loaded the
+        // file; EndFile surfaces load failures as Err from wait_event.
+        let _ = mpv.enable_event(events::mpv_event_id::FileLoaded);
+        let _ = mpv.enable_event(events::mpv_event_id::EndFile);
         Ok(Self { mpv, current: None })
+    }
+
+    /// Read a numeric mpv property as a `Duration` (seconds), ignoring
+    /// missing, non-finite, or negative values.
+    fn prop_secs(&self, name: &str) -> Option<Duration> {
+        self.mpv
+            .get_property::<f64>(name)
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(Duration::from_secs_f64)
+    }
+
+    /// Read a `metadata/by-key/<key>` string property.
+    fn meta_str(&self, key: &str) -> Option<String> {
+        self.mpv
+            .get_property::<String>(&format!("metadata/by-key/{key}"))
+            .ok()
+    }
+
+    /// Block until mpv reports the newly loaded file (or fails / times
+    /// out), so duration and metadata reads see populated values. mpv
+    /// loads asynchronously — reading properties right after `loadfile`
+    /// returns almost always yields empty results.
+    fn wait_until_loaded(&self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs_f64();
+            if remaining <= 0.0 {
+                return;
+            }
+            match self.mpv.wait_event(remaining) {
+                Some(Ok(events::Event::FileLoaded)) | Some(Err(_)) | None => return,
+                // Stale EndFile events belong to the previous file;
+                // keep waiting for the new file's FileLoaded.
+                _ => continue,
+            }
+        }
     }
 }
 
@@ -102,42 +149,18 @@ impl PlaybackEngine for MpvPlaybackEngine {
             .map_err(mpv_err)?;
 
         self.current = Some(source.to_path_buf());
+        self.wait_until_loaded();
 
-        let duration = self
-            .mpv
-            .get_property::<f64>("duration")
-            .ok()
-            .filter(|d| d.is_finite() && *d > 0.0)
-            .map(Duration::from_secs_f64);
+        let duration = self.prop_secs("duration").filter(|d| !d.is_zero());
 
-        // Extract metadata from mpv's metadata property (a map of key/value pairs).
-        // Common keys: title, artist, album, date, genre, comment.
+        // Common metadata keys: title, artist, album, date, genre, comment.
         let metadata = go_media::MediaMetadata {
-            title: self
-                .mpv
-                .get_property::<String>("metadata/by-key/title")
-                .ok(),
-            artist: self
-                .mpv
-                .get_property::<String>("metadata/by-key/artist")
-                .ok(),
-            album: self
-                .mpv
-                .get_property::<String>("metadata/by-key/album")
-                .ok(),
-            year: self
-                .mpv
-                .get_property::<String>("metadata/by-key/date")
-                .ok()
-                .and_then(|s| s.parse::<u32>().ok()),
-            genre: self
-                .mpv
-                .get_property::<String>("metadata/by-key/genre")
-                .ok(),
-            comment: self
-                .mpv
-                .get_property::<String>("metadata/by-key/comment")
-                .ok(),
+            title: self.meta_str("title"),
+            artist: self.meta_str("artist"),
+            album: self.meta_str("album"),
+            year: self.meta_str("date").and_then(|s| s.parse().ok()),
+            genre: self.meta_str("genre"),
+            comment: self.meta_str("comment"),
         };
 
         // Track enumeration requires parsing mpv's track-list node; that
@@ -151,6 +174,15 @@ impl PlaybackEngine for MpvPlaybackEngine {
     }
 
     fn play(&mut self) -> MediaResult<()> {
+        // At EOF mpv has already stopped advancing; `pause=no` alone is a
+        // no-op, so rewind to the start first to make Play act as replay.
+        if self
+            .mpv
+            .get_property::<bool>("eof-reached")
+            .unwrap_or(false)
+        {
+            let _ = self.seek(Duration::ZERO);
+        }
         self.mpv.set_property("pause", false).map_err(mpv_err)
     }
 
@@ -173,23 +205,13 @@ impl PlaybackEngine for MpvPlaybackEngine {
 
     fn state(&self) -> MediaResult<PlaybackState> {
         let paused = self.mpv.get_property::<bool>("pause").map_err(mpv_err)?;
-        let position = self
-            .mpv
-            .get_property::<f64>("time-pos")
-            .ok()
-            .filter(|t| t.is_finite() && *t >= 0.0)
-            .map(Duration::from_secs_f64)
-            .unwrap_or_default();
-        let duration = self
-            .mpv
-            .get_property::<f64>("duration")
-            .ok()
-            .filter(|d| d.is_finite() && *d > 0.0)
-            .map(Duration::from_secs_f64);
+        let position = self.prop_secs("time-pos").unwrap_or_default();
+        let duration = self.prop_secs("duration").filter(|d| !d.is_zero());
         let eof = self
             .mpv
             .get_property::<bool>("eof-reached")
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || matches!((position, duration), (p, Some(d)) if p >= d);
 
         let status = if self.current.is_none() {
             PlaybackStatus::Stopped

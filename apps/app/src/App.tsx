@@ -155,6 +155,20 @@ export default function App() {
     setUiVisible(true);
   });
 
+  // At EOF, rewind to the start and pause: mpv keeps its window open
+  // (keep-open) so the first frame stays on screen, and Play/Space then
+  // resumes from the beginning like a normal replay.
+  let prevEnded = false;
+  createEffect(() => {
+    const ended = pb()?.status === "ended";
+    if (ended && !prevEnded && media()) {
+      void invoke("media_seek", { positionMs: 0 })
+        .then(() => invoke("media_pause"))
+        .catch((e) => setError(String(e)));
+    }
+    prevEnded = ended;
+  });
+
   onMount(() => {
     void invoke<MediaBackendInfo>("media_backend")
       .then(setBackend)
