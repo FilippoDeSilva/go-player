@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Engineering guidelines
+    url: https://github.com/FilippoDeSilva/go-player/blob/main/AGENTS.md
+    about: Architecture boundaries and contribution rules
+  - name: Discussions
+    url: https://github.com/FilippoDeSilva/go-player/discussions
+    about: Questions and design discussion
