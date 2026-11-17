@@ -52,10 +52,8 @@ fn main() {
             (Ok(src), Ok(dst)) => src.len() != dst.len(),
             _ => true,
         };
-        if needs_copy {
-            if let Err(e) = fs::copy(&dll, &dest) {
-                println!("cargo:warning=failed to stage {}: {e}", dest.display());
-            }
+        if needs_copy && let Err(e) = fs::copy(&dll, &dest) {
+            println!("cargo:warning=failed to stage {}: {e}", dest.display());
         }
     }
 }

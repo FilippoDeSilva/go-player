@@ -49,6 +49,25 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Provision libmpv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-mpv.ps1
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libmpv-dev
+
+      - name: Install mpv (macOS)
+        if: runner.os == 'macOS'
+        run: brew install mpv
+
       - name: Format
         run: cargo fmt --all -- --check
 
