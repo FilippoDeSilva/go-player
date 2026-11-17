@@ -1,0 +1,6 @@
+# Pinned dev tool versions — install with `mise install`.
+# Rust is pinned separately in rust-toolchain.toml (rustup-native).
+# MSVC Build Tools can't be managed here; scripts/setup.ps1 handles it.
+[tools]
+node = "24.9.0"
+pnpm = "12.21.0"

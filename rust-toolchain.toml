@@ -1,0 +1,6 @@
+# Rust toolchain pin — respected by rustup, cargo, rust-analyzer, and CI.
+# Bump deliberately; don't float on "stable" for reproducible builds.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]

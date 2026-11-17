@@ -1,0 +1,10 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Supply-chain guard: ignore package versions published less than 24h ago.
+# Raise toward 10080 (7d) once the dep tree stabilizes; fast-moving deps
+# (rolldown, babel) currently publish faster than a 7d window allows.
+minimumReleaseAge: 1440
+onlyBuiltDependencies:
+  - esbuild

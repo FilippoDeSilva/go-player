@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+target/
+apps/app/dist/
+
+# Tauri / Rust
+apps/app/src-tauri/gen/
+
+# Models & media (large binaries, never commit)
+models/
+*.gguf
+*.bin
+*.onnx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
