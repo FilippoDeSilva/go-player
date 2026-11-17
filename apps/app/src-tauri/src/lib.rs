@@ -14,6 +14,7 @@ struct AppState {
     engine: Mutex<Option<MpvPlaybackEngine>>,
     #[cfg(windows)]
     video_hwnd: Mutex<Option<video_surface::VideoSurfaceHwnd>>,
+    #[cfg(windows)]
     parent_hwnd: Mutex<Option<isize>>,
 }
 
