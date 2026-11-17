@@ -1,3 +1,4 @@
+#[cfg(windows)]
 mod video_surface;
 
 use go_media::{MediaBackend, PlaybackEngine};
@@ -114,6 +115,7 @@ fn open_media(
         }
         #[cfg(not(windows))]
         {
+            let _ = &window;
             let engine =
                 MpvPlaybackEngine::new_headless().map_err(|e| format!("mpv init failed: {e}"))?;
             *guard = Some(engine);
