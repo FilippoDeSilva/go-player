@@ -2,10 +2,20 @@
 //!
 //! ## Status
 //!
-//! Headless playback works: open / play / pause / stop / seek / track
-//! selection / state queries. `with_video_surface` embeds video into a
-//! native window via mpv's `wid` option; `new_headless` uses `vo=null`
-//! for tests and audio-only probing.
+//! Playback works: open / play / pause / stop / seek / track selection /
+//! state queries. `with_video_surface` embeds video into a native window
+//! via mpv's `wid` option; `new_headless` uses `vo=null` for tests and
+//! audio-only probing.
+//!
+//! ## Event model
+//!
+//! A dedicated watcher thread is the single consumer of mpv's event
+//! queue. It observes `time-pos`, `pause`, `eof-reached`, `duration`,
+//! and `path` via `mpv_observe_property`, so playback state reaches the
+//! host as push notifications (`set_state_callback`) instead of the host
+//! polling `state()`. End-of-file is handled inside the watcher: on
+//! `END_FILE`/EOF it invokes `set_eof_callback` (so the host can hide the
+//! video surface for the no-frame moment), then rewinds to 0 and pauses.
 //!
 //! ## Native dependency
 //!
@@ -18,17 +28,43 @@ use go_media::{
     MediaBackend, MediaError, MediaInfo, MediaResult, PlaybackEngine, PlaybackState,
     PlaybackStatus, TrackKind,
 };
-use libmpv2::{Mpv, events};
+use libmpv2::{Format, Mpv, events};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
+
+/// Shared slot for a host callback of signature `Fn(T) + Send + Sync`.
+type CallbackSlot<T> = Arc<Mutex<Option<Arc<T>>>>;
+
+/// Playback-state push channel: `Fn(PlaybackState) + Send + Sync`.
+type StateCallback = dyn Fn(PlaybackState) + Send + Sync;
+/// End-of-file notification: `Fn() + Send + Sync`.
+type EofCallback = dyn Fn() + Send + Sync;
+
+/// How often the watcher emits a state snapshot while only position
+/// ticks are arriving. Status changes (play/pause/eof/load) emit
+/// immediately.
+const STATE_EMIT_INTERVAL: Duration = Duration::from_millis(200);
+/// How long `open()` waits for mpv's FILE_LOADED event.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// libmpv-backed playback engine.
 ///
 /// `Mpv` is `Send + Sync`; all calls marshal through libmpv's own
 /// thread-safe client API, so this type is safe to move between threads.
+/// `mpv` is shared with a background event watcher that owns mpv's event
+/// queue and pushes [`PlaybackState`] snapshots to the registered
+/// callback.
 pub struct MpvPlaybackEngine {
-    mpv: Mpv,
+    mpv: Arc<Mpv>,
     current: Option<PathBuf>,
+    /// Set by the event watcher when mpv reports FILE_LOADED.
+    file_loaded: Arc<AtomicBool>,
+    state_cb: CallbackSlot<StateCallback>,
+    eof_cb: CallbackSlot<EofCallback>,
 }
 
 impl MpvPlaybackEngine {
@@ -53,12 +89,36 @@ impl MpvPlaybackEngine {
             init.set_property("idle", "yes")?;
             init.set_property("terminal", "no")?;
             init.set_property("input-vo-keyboard", "no")?;
+            // GPU-first: hardware decode where available, software
+            // fallback otherwise (auto-safe never fails on missing HW).
+            // `hwdec` is an mpv option, not a runtime property — it must
+            // go through set_option (set_property would fail init).
+            init.set_option("hwdec", "auto-safe")?;
             // Keep mpv's child window alive at end-of-file so the last
             // frame stays on screen instead of the surface going blank.
             init.set_property("keep-open", "yes")?;
             init.set_property("force-window", "yes")?;
             Ok(())
         })
+    }
+
+    /// Register a callback that receives [`PlaybackState`] snapshots.
+    /// Position updates arrive at ~5 Hz; status changes arrive
+    /// immediately. Replaces host-side polling of
+    /// [`PlaybackEngine::state`].
+    pub fn set_state_callback(&self, cb: impl Fn(PlaybackState) + Send + Sync + 'static) {
+        if let Ok(mut g) = self.state_cb.lock() {
+            *g = Some(Arc::new(cb));
+        }
+    }
+
+    /// Register a callback fired the instant mpv reports end-of-file,
+    /// before the automatic rewind-to-start. Used by the host to hide the
+    /// video surface during the brief no-frame moment at EOF.
+    pub fn set_eof_callback(&self, cb: impl Fn() + Send + Sync + 'static) {
+        if let Ok(mut g) = self.eof_cb.lock() {
+            *g = Some(Arc::new(cb));
+        }
     }
 
     /// Set volume as a percentage (0–100).
@@ -78,11 +138,36 @@ impl MpvPlaybackEngine {
         F: FnOnce(libmpv2::MpvInitializer) -> libmpv2::Result<()>,
     {
         let mpv = Mpv::with_initializer(configure).map_err(engine_err)?;
-        // FileLoaded lets open() wait until mpv has actually loaded the
-        // file; EndFile surfaces load failures as Err from wait_event.
+        let mpv = Arc::new(mpv);
+
+        let file_loaded = Arc::new(AtomicBool::new(false));
+        let state_cb: CallbackSlot<StateCallback> = Arc::new(Mutex::new(None));
+        let eof_cb: CallbackSlot<EofCallback> = Arc::new(Mutex::new(None));
+
+        // Property observations feed the watcher; ids must be unique.
+        observe(&mpv, "time-pos", Format::Double, 1);
+        observe(&mpv, "pause", Format::Flag, 2);
+        observe(&mpv, "eof-reached", Format::Flag, 3);
+        observe(&mpv, "duration", Format::Double, 4);
+        observe(&mpv, "path", Format::String, 5);
         let _ = mpv.enable_event(events::mpv_event_id::FileLoaded);
         let _ = mpv.enable_event(events::mpv_event_id::EndFile);
-        Ok(Self { mpv, current: None })
+        let _ = mpv.enable_event(events::mpv_event_id::Shutdown);
+
+        spawn_event_watcher(
+            Arc::clone(&mpv),
+            Arc::clone(&file_loaded),
+            Arc::clone(&state_cb),
+            Arc::clone(&eof_cb),
+        );
+
+        Ok(Self {
+            mpv,
+            current: None,
+            file_loaded,
+            state_cb,
+            eof_cb,
+        })
     }
 
     /// Read a numeric mpv property as a `Duration` (seconds), ignoring
@@ -102,26 +187,187 @@ impl MpvPlaybackEngine {
             .ok()
     }
 
-    /// Block until mpv reports the newly loaded file (or fails / times
-    /// out), so duration and metadata reads see populated values. mpv
-    /// loads asynchronously — reading properties right after `loadfile`
-    /// returns almost always yields empty results.
+    /// Block until the event watcher reports the newly loaded file (or
+    /// times out), so duration and metadata reads see populated values.
+    /// mpv loads asynchronously — reading properties right after
+    /// `loadfile` returns almost always yields empty results. The watcher
+    /// owns mpv's event queue, so this polls a flag rather than events.
     fn wait_until_loaded(&self) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let remaining = deadline
-                .saturating_duration_since(std::time::Instant::now())
-                .as_secs_f64();
-            if remaining <= 0.0 {
+        let deadline = Instant::now() + LOAD_TIMEOUT;
+        while !self.file_loaded.load(Ordering::Relaxed) {
+            if Instant::now() >= deadline {
                 return;
             }
-            match self.mpv.wait_event(remaining) {
-                Some(Ok(events::Event::FileLoaded)) | Some(Err(_)) | None => return,
-                // Stale EndFile events belong to the previous file;
-                // keep waiting for the new file's FileLoaded.
-                _ => continue,
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// Register an mpv property observation; failures are non-fatal (the
+/// property simply won't push updates).
+fn observe(mpv: &Mpv, name: &str, format: Format, id: u64) {
+    let _ = mpv.observe_property(name, format, id);
+}
+
+/// mpv's `MPV_END_FILE_REASON_EOF` (0). Other end reasons — stop, quit,
+/// error, redirect — must not trigger an automatic rewind.
+const END_FILE_REASON_EOF: u32 = 0;
+
+/// Latest observed mpv property values, maintained by the watcher.
+#[derive(Default)]
+struct Observed {
+    position: f64,
+    paused: bool,
+    eof: bool,
+    duration: Option<f64>,
+    /// Whether mpv reports a file loaded (`path` property non-empty).
+    has_file: bool,
+}
+
+impl Observed {
+    fn snapshot(&self) -> PlaybackState {
+        let duration = self
+            .duration
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .map(Duration::from_secs_f64);
+        let position = if self.position.is_finite() && self.position > 0.0 {
+            Duration::from_secs_f64(self.position)
+        } else {
+            Duration::ZERO
+        };
+        let status = if !self.has_file {
+            PlaybackStatus::Stopped
+        } else if self.eof {
+            PlaybackStatus::Ended
+        } else if self.paused {
+            PlaybackStatus::Paused
+        } else {
+            PlaybackStatus::Playing
+        };
+        PlaybackState {
+            status,
+            position,
+            duration,
+        }
+    }
+}
+
+/// Consume mpv's event queue on a dedicated thread — the only
+/// `wait_event` caller, since the queue cannot be drained twice.
+///
+/// Pushes throttled [`PlaybackState`] snapshots to `state_cb` (immediate
+/// on status changes, ~5 Hz for position ticks), flags `file_loaded` for
+/// `open()`, and on END_FILE/EOF notifies `eof_cb`, then rewinds to the
+/// start and pauses.
+fn spawn_event_watcher(
+    mpv: Arc<Mpv>,
+    file_loaded: Arc<AtomicBool>,
+    state_cb: CallbackSlot<StateCallback>,
+    eof_cb: CallbackSlot<EofCallback>,
+) {
+    std::thread::spawn(move || {
+        let mut obs = Observed::default();
+        let mut last_emit = Instant::now() - STATE_EMIT_INTERVAL;
+        // Set when something other than a position tick changed, or a
+        // file-level event arrived — forces an immediate emit.
+        let mut urgent = true;
+
+        loop {
+            // Compute the wait so the next emit happens on schedule even
+            // if no events arrive.
+            let since_emit = last_emit.elapsed();
+            let timeout = if urgent {
+                0.0
+            } else {
+                (STATE_EMIT_INTERVAL - since_emit).as_secs_f64().max(0.001)
+            };
+
+            let shutdown = match mpv.wait_event(timeout) {
+                Some(Ok(events::Event::Shutdown)) => true,
+                Some(Ok(event)) => {
+                    handle_event(&mpv, event, &mut obs, &file_loaded, &eof_cb, &mut urgent);
+                    false
+                }
+                _ => false,
+            };
+            if shutdown {
+                break;
+            }
+
+            if urgent || last_emit.elapsed() >= STATE_EMIT_INTERVAL {
+                let cb = state_cb.lock().ok().and_then(|g| g.clone());
+                if let Some(cb) = cb {
+                    cb(obs.snapshot());
+                }
+                last_emit = Instant::now();
+                urgent = false;
             }
         }
+    });
+}
+
+fn handle_event(
+    mpv: &Mpv,
+    event: events::Event<'_>,
+    obs: &mut Observed,
+    file_loaded: &AtomicBool,
+    eof_cb: &CallbackSlot<EofCallback>,
+    urgent: &mut bool,
+) {
+    match event {
+        events::Event::FileLoaded => {
+            file_loaded.store(true, Ordering::Relaxed);
+            obs.has_file = true;
+            *urgent = true;
+        }
+        events::Event::EndFile(reason) => {
+            file_loaded.store(false, Ordering::Relaxed);
+            if reason == END_FILE_REASON_EOF {
+                // Notify the host first so it can hide the surface before
+                // mpv clears its last frame.
+                let cb = eof_cb.lock().ok().and_then(|g| g.clone());
+                if let Some(cb) = cb {
+                    cb();
+                }
+                let _ = mpv.command("seek", &["0", "absolute"]);
+                let _ = mpv.set_property("pause", true);
+            }
+            *urgent = true;
+        }
+        events::Event::StartFile => {
+            *urgent = true;
+        }
+        events::Event::PropertyChange { name, change, .. } => {
+            apply_property(obs, name, &change);
+            // Position ticks are throttled; everything else is urgent.
+            if name != "time-pos" {
+                *urgent = true;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_property(obs: &mut Observed, name: &str, change: &events::PropertyData<'_>) {
+    match (name, change) {
+        ("time-pos", events::PropertyData::Double(v)) => obs.position = *v,
+        ("pause", events::PropertyData::Flag(v)) => obs.paused = *v,
+        ("eof-reached", events::PropertyData::Flag(v)) => obs.eof = *v,
+        ("duration", events::PropertyData::Double(v)) => {
+            obs.duration = if v.is_finite() && *v > 0.0 {
+                Some(*v)
+            } else {
+                None
+            };
+        }
+        ("path", events::PropertyData::Str(s)) => obs.has_file = !s.is_empty(),
+        ("path", events::PropertyData::None) => obs.has_file = false,
+        // Properties go None when mpv tears down track state (e.g. after
+        // EndFile); treat observed flags as cleared.
+        ("eof-reached", events::PropertyData::None) => obs.eof = false,
+        ("pause", events::PropertyData::None) => obs.paused = false,
+        ("time-pos", events::PropertyData::None) => obs.position = 0.0,
+        _ => {}
     }
 }
 
@@ -144,6 +390,7 @@ impl PlaybackEngine for MpvPlaybackEngine {
             .ok_or_else(|| MediaError::InvalidSource("non-UTF-8 path".into()))?;
 
         // Replace playlist with the single file and start playback.
+        self.file_loaded.store(false, Ordering::Relaxed);
         self.mpv
             .command("loadfile", &[path_str, "replace"])
             .map_err(mpv_err)?;
@@ -240,5 +487,24 @@ impl PlaybackEngine for MpvPlaybackEngine {
             (TrackKind::Video, _) => return Ok(()),
         };
         self.mpv.set_property(prop, value.as_str()).map_err(mpv_err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observed_snapshot_maps_status() {
+        let mut obs = Observed {
+            has_file: true,
+            paused: true,
+            ..Observed::default()
+        };
+        assert_eq!(obs.snapshot().status, PlaybackStatus::Paused);
+        obs.eof = true;
+        assert_eq!(obs.snapshot().status, PlaybackStatus::Ended);
+        obs.has_file = false;
+        assert_eq!(obs.snapshot().status, PlaybackStatus::Stopped);
     }
 }

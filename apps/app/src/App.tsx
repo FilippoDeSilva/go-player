@@ -55,7 +55,6 @@ const MEDIA_EXTS = [
   "aiff",
 ];
 const SUBTITLE_EXTS = ["srt", "vtt", "ass", "ssa"];
-const POLL_MS = 250;
 const UI_HIDE_MS = 3000;
 
 function extOf(path: string): string {
@@ -97,17 +96,22 @@ export default function App() {
   const [showCast, setShowCast] = createSignal(false);
   const [showRecent, setShowRecent] = createSignal(false);
   const [showVolume, setShowVolume] = createSignal(false);
-  const [queue, setQueue] = createSignal<string[]>([]);
+  const [queue] = createSignal<string[]>([]);
   const [uiVisible, setUiVisible] = createSignal(true);
+  // True during the brief EOF→rewind window: mpv's surface is hidden and
+  // the stage paints black so mpv's cleared (grey) frame never shows.
+  const [eofHold, setEofHold] = createSignal(false);
 
   // Timestamp of the last user activity; a 500ms interval hides the
   // bars once it is older than UI_HIDE_MS. setTimeout proved unreliable
   // in this WebView2 setup, while setInterval demonstrably fires.
   let lastActivityAt = 0;
+  let eofAt = 0;
 
   const playing = () => pb()?.status === "playing";
   const pos = () => pb()?.position_ms ?? 0;
   const dur = () => pb()?.duration_ms ?? 0;
+  const coverUrl = () => media()?.cover_art ?? null;
 
   // Bars overlay the video; they auto-hide after idle and always stay
   // visible when a menu/modal is open or no media is loaded (so window
@@ -169,36 +173,57 @@ export default function App() {
     prevEnded = ended;
   });
 
+  // Once the engine's EOF rewind lands, playback reads paused/playing at
+  // position 0 — restore mpv's surface (Rust already hid it on the eof
+  // event, so the grey frame never renders).
+  createEffect(() => {
+    if (!eofHold()) return;
+    const st = pb()?.status;
+    if (st === "paused" || st === "playing" || st === "stopped") {
+      setEofHold(false);
+      void invoke("media_surface_show").catch(() => {});
+    }
+  });
+
   onMount(() => {
     void invoke<MediaBackendInfo>("media_backend")
       .then(setBackend)
       .catch((e) => setError(String(e)));
 
-    const interval = window.setInterval(() => {
-      if (media())
-        void invoke<PlaybackState>("media_state")
-          .then(setPb)
-          .catch(() => {});
-    }, POLL_MS);
-    onCleanup(() => window.clearInterval(interval));
+    // Playback state arrives as push events from the engine's mpv
+    // property observer — no polling. media_state remains for the one
+    // initial fetch after open_media.
+    let unlistenState: (() => void) | undefined;
+    void listen<PlaybackState>("media://state", (e) => setPb(e.payload)).then(
+      (u) => (unlistenState = u),
+    );
 
-    // Auto-hide check: runs on the same proven interval cadence as the
-    // playback poll. Hides the bars once the user has been inactive for
-    // UI_HIDE_MS while media is loaded.
+    // Auto-hide check on a UI timer: hides the bars once the user has
+    // been inactive for UI_HIDE_MS while media is loaded.
     const uiInterval = window.setInterval(() => {
       if (media() && uiVisible() && Date.now() - lastActivityAt > UI_HIDE_MS) {
         setUiVisible(false);
       }
+      // Safety: never leave the surface hidden if the paused state is
+      // somehow missed (e.g. status stays "ended" indefinitely).
+      if (eofHold() && Date.now() - eofAt > 1500) {
+        setEofHold(false);
+        void invoke("media_surface_show").catch(() => {});
+      }
     }, 500);
     onCleanup(() => window.clearInterval(uiInterval));
 
-    let unlistenEnded: (() => void) | undefined;
-    void listen("media://ended", () => {
-      void invoke<PlaybackState>("media_state").then(setPb);
-    }).then((u) => (unlistenEnded = u));
+    let unlistenEof: (() => void) | undefined;
+    void listen("media://eof", () => {
+      if (mediaKind() !== "video") return;
+      eofAt = Date.now();
+      setEofHold(true);
+      void invoke("media_surface_hide").catch(() => {});
+    }).then((u) => (unlistenEof = u));
 
     onCleanup(() => {
-      unlistenEnded?.();
+      unlistenState?.();
+      unlistenEof?.();
     });
 
     const onKey = (e: KeyboardEvent) => {
@@ -317,6 +342,7 @@ export default function App() {
       setMediaKind(isAudio(path) ? "audio" : "video");
       setSubtitle(null);
       setSubtitlePath(null);
+      setEofHold(false);
       setPb(await invoke<PlaybackState>("media_state"));
     } catch (e) {
       setError(String(e));
@@ -381,13 +407,18 @@ export default function App() {
             </div>
           }
         >
-          <Show when={mediaKind() === "audio"} fallback={<div class="h-full" />}>
+          <Show
+            when={mediaKind() === "audio"}
+            fallback={
+              <div class="h-full" style={{ background: eofHold() ? "#000" : "transparent" }} />
+            }
+          >
             <div
               class="anim-fade-up flex h-full flex-col items-center justify-center gap-5 px-8 text-center"
               style={{ background: "var(--bg)" }}
             >
               <div
-                class="flex h-52 w-52 items-center justify-center rounded-[28px] border shadow-2xl"
+                class="flex h-52 w-52 items-center justify-center overflow-hidden rounded-[28px] border shadow-2xl"
                 style={{
                   "border-color": "var(--border)",
                   background: "var(--panel-solid)",
@@ -395,7 +426,16 @@ export default function App() {
                   "box-shadow": "0 24px 64px rgba(0,0,0,0.5)",
                 }}
               >
-                <Music class="h-24 w-24" />
+                <Show when={coverUrl()} fallback={<Music class="h-24 w-24" />}>
+                  {(url) => (
+                    <img
+                      src={url()}
+                      alt="Cover art"
+                      class="h-full w-full object-cover"
+                      draggable={false}
+                    />
+                  )}
+                </Show>
               </div>
               <div class="max-w-xl">
                 <h2 class="truncate text-3xl font-semibold">
@@ -536,7 +576,7 @@ export default function App() {
 
         {/* Player bar — shared by video and audio */}
         <footer
-          class="flex h-[100px] shrink-0 flex-col border-t backdrop-blur-xl backdrop-saturate-150"
+          class="flex h-25 shrink-0 flex-col border-t backdrop-blur-xl backdrop-saturate-150"
           style={{
             "border-color": "var(--border)",
             background: "color-mix(in srgb, var(--bg) 38%, transparent)",
@@ -584,8 +624,20 @@ export default function App() {
                   color: "var(--accent)",
                 }}
               >
-                <Show when={mediaKind() === "video"} fallback={<Music class="h-5 w-5" />}>
-                  <Clapperboard class="h-5 w-5" />
+                <Show
+                  when={mediaKind() === "audio" && coverUrl()}
+                  fallback={
+                    <Show when={mediaKind() === "video"} fallback={<Music class="h-5 w-5" />}>
+                      <Clapperboard class="h-5 w-5" />
+                    </Show>
+                  }
+                >
+                  <img
+                    src={coverUrl()!}
+                    alt=""
+                    class="h-full w-full object-cover"
+                    draggable={false}
+                  />
                 </Show>
               </div>
               <div class="min-w-0">
@@ -787,10 +839,7 @@ function QueuePanel(props: { open: boolean; onClose: () => void; queue: string[]
               </p>
             ) : (
               props.queue.map((path, i) => (
-                <div
-                  key={i}
-                  class="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-white/5"
-                >
+                <div class="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-white/5">
                   <span class="w-6 text-xs" style={{ color: "var(--text-faint)" }}>
                     {i + 1}
                   </span>

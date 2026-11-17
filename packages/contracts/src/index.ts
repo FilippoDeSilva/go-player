@@ -45,6 +45,8 @@ export interface MediaInfoDto {
   path: string;
   duration_ms: number | null;
   metadata: MediaMetadata;
+  /** Base64-encoded image of embedded or sidecar cover art (audio). */
+  cover_art: string | null;
 }
 
 export type MediaBackend = "mpv" | "other";

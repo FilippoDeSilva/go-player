@@ -1,13 +1,14 @@
 #[cfg(windows)]
 mod video_surface;
 
-use go_media::{MediaBackend, PlaybackEngine};
+use base64::Engine as _;
+use go_media::{MediaBackend, PlaybackEngine, PlaybackState};
 use go_media_mpv::MpvPlaybackEngine;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{Manager, State, Window};
+use tauri::{Emitter, Manager, State, Window};
 
 #[derive(Default)]
 struct AppState {
@@ -17,6 +18,10 @@ struct AppState {
     /// Whether mpv's window should be visible (video vs audio).
     #[cfg(windows)]
     video_shown: Mutex<bool>,
+    /// Forced hide independent of media kind — set during the EOF rewind
+    /// so mpv's cleared (grey) frame never shows.
+    #[cfg(windows)]
+    surface_forced_hidden: Mutex<bool>,
 }
 
 #[derive(Serialize)]
@@ -40,13 +45,31 @@ struct MediaInfoDto {
     path: String,
     duration_ms: Option<u64>,
     metadata: MediaMetadataDto,
+    /// Ready-to-use `data:` URL of embedded or sidecar cover art (audio).
+    cover_art: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct PlaybackStateDto {
     status: &'static str,
     position_ms: u64,
     duration_ms: Option<u64>,
+}
+
+impl From<PlaybackState> for PlaybackStateDto {
+    fn from(s: PlaybackState) -> Self {
+        Self {
+            status: match s.status {
+                go_media::PlaybackStatus::Stopped => "stopped",
+                go_media::PlaybackStatus::Playing => "playing",
+                go_media::PlaybackStatus::Paused => "paused",
+                go_media::PlaybackStatus::Ended => "ended",
+                go_media::PlaybackStatus::Error => "error",
+            },
+            position_ms: s.position.as_millis() as u64,
+            duration_ms: s.duration.map(|d| d.as_millis() as u64),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -85,11 +108,24 @@ fn load_subtitles(path: String) -> Result<SubtitleSummary, String> {
     })
 }
 
+/// Visibility the surface should have right now: shown for video unless
+/// an EOF rewind has force-hidden it.
+#[cfg(windows)]
+fn effective_surface_visible(state: &AppState) -> bool {
+    let shown = state.video_shown.lock().map(|g| *g).unwrap_or(false);
+    let forced = state
+        .surface_forced_hidden
+        .lock()
+        .map(|g| *g)
+        .unwrap_or(false);
+    shown && !forced
+}
+
 /// mpv creates its own child window under the `wid` parent (the main
-/// window). Poll for it on a background thread — it only appears once
-/// the VO initializes after `loadfile` — then pin it to the bottom of
-/// the z-order (below the transparent webview), size it to the full
-/// client area, and apply the current visibility.
+/// window). A WinEvent hook — not a poll — detects it the instant it
+/// appears, then keeps re-asserting our z-order / visibility every time
+/// mpv touches that window afterwards (mpv re-shows itself when tracks
+/// start, which is what let the audio cover flash fullscreen).
 #[cfg(windows)]
 fn ensure_mpv_surface(app: &tauri::AppHandle) {
     {
@@ -111,27 +147,59 @@ fn ensure_mpv_surface(app: &tauri::AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         let parent = windows::Win32::Foundation::HWND(parent as *mut _);
-        for _ in 0..100 {
-            if let Some(child) = unsafe { video_surface::find_mpv_child(parent) } {
+        let parent_isize = parent.0 as isize;
+        unsafe {
+            video_surface::manage_mpv_child(parent, Duration::from_secs(5), move |child| {
+                let parent = windows::Win32::Foundation::HWND(parent_isize as *mut _);
                 let surface = video_surface::VideoSurfaceHwnd(child.0 as isize);
                 let state = app.state::<AppState>();
-                let show = state.video_shown.lock().map(|g| *g).unwrap_or(false);
-                unsafe {
-                    video_surface::set_bottom(surface);
-                    video_surface::resize_to_parent(parent, surface);
-                    video_surface::bring_webview_to_top(parent);
-                    video_surface::set_visible(surface, show);
-                    video_surface::dump_children(parent);
+                video_surface::set_bottom(surface);
+                video_surface::resize_to_parent(parent, surface);
+                video_surface::bring_webview_to_top(parent);
+                video_surface::set_visible(surface, effective_surface_visible(&state));
+                video_surface::set_black_background(surface);
+                if state
+                    .video_hwnd
+                    .lock()
+                    .map(|mut g| g.replace(surface).is_none())
+                    .unwrap_or(false)
+                {
+                    eprintln!("[go-player] mpv child window: {}", child.0 as isize);
                 }
-                eprintln!("[go-player] mpv child window: {}", child.0 as isize);
-                if let Ok(mut g) = state.video_hwnd.lock() {
-                    *g = Some(surface);
-                }
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+            });
         }
-        eprintln!("[go-player] warning: mpv child window not found after 5s");
+    });
+}
+
+/// Wire the engine's push callbacks to Tauri events. Called once, right
+/// after engine creation: `media://state` carries throttled playback
+/// snapshots (replacing frontend polling), `media://eof` fires the
+/// instant mpv hits end-of-file so the host can hide the surface while
+/// the engine rewinds to frame 0.
+fn wire_engine_callbacks(engine: &MpvPlaybackEngine, app: &tauri::AppHandle) {
+    let app_state = app.clone();
+    engine.set_state_callback(move |s| {
+        let _ = app_state.emit("media://state", PlaybackStateDto::from(s));
+    });
+
+    let app_eof = app.clone();
+    engine.set_eof_callback(move || {
+        #[cfg(windows)]
+        {
+            let state = app_eof.state::<AppState>();
+            if let Ok(mut g) = state.surface_forced_hidden.lock() {
+                *g = true;
+            }
+            // Apply effective visibility directly — no IPC roundtrip.
+            if let Ok(surface) = state.video_hwnd.lock()
+                && let Some(s) = *surface
+            {
+                unsafe {
+                    video_surface::set_visible(s, effective_surface_visible(&state));
+                }
+            }
+        }
+        let _ = app_eof.emit("media://eof", ());
     });
 }
 
@@ -149,7 +217,7 @@ fn open_media(
         #[cfg(windows)]
         {
             // Pass the main window HWND: mpv embeds by creating its own
-            // child window under it, which we later pin below the
+            // child window under it, which the guardian pins below the
             // transparent webview (see ensure_mpv_surface).
             let hwnd = window.hwnd().map_err(|e| format!("hwnd failed: {e}"))?;
             let parent = windows::Win32::Foundation::HWND(hwnd.0);
@@ -159,6 +227,7 @@ fn open_media(
                 "[go-player] mpv engine initialized (wid={})",
                 parent.0 as isize
             );
+            wire_engine_callbacks(&engine, window.app_handle());
             *guard = Some(engine);
         }
         #[cfg(not(windows))]
@@ -167,9 +236,35 @@ fn open_media(
             let _ = has_video;
             let engine =
                 MpvPlaybackEngine::new_headless().map_err(|e| format!("mpv init failed: {e}"))?;
+            wire_engine_callbacks(&engine, window.app_handle());
             *guard = Some(engine);
         }
     }
+
+    // Configure the surface before opening: mpv's window appears as soon
+    // as the VO initializes during loadfile, so visibility must already
+    // be correct — hidden for audio so cover art never flashes
+    // fullscreen, shown for video. The WinEvent hook is armed here so it
+    // catches the window the moment mpv creates it.
+    #[cfg(windows)]
+    {
+        if let Ok(mut g) = state.video_shown.lock() {
+            *g = has_video;
+        }
+        if let Ok(mut g) = state.surface_forced_hidden.lock() {
+            *g = false;
+        }
+        ensure_mpv_surface(window.app_handle());
+        if let Ok(surface) = state.video_hwnd.lock()
+            && let Some(s) = *surface
+        {
+            unsafe {
+                video_surface::set_visible(s, effective_surface_visible(&state));
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = has_video;
 
     let engine = guard.as_mut().unwrap();
     let info = engine
@@ -177,22 +272,25 @@ fn open_media(
         .map_err(|e| format!("open failed for {}: {e}", src.display()))?;
     eprintln!("[go-player] opened {}", src.display());
 
-    #[cfg(windows)]
-    {
-        if let Ok(mut g) = state.video_shown.lock() {
-            *g = has_video;
-        }
-        ensure_mpv_surface(window.app_handle());
-        if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
-            unsafe { video_surface::set_visible(surface, has_video) };
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = has_video;
+    // Cover art comes from the file's tags / sidecar image — not from
+    // mpv's rendered window, so it works regardless of surface state.
+    // Returned as a ready-to-use data URL (mime included).
+    let cover_art = if has_video {
+        None
+    } else {
+        go_tags::cover_art(&src).map(|art| {
+            format!(
+                "data:{};base64,{}",
+                art.mime,
+                base64::engine::general_purpose::STANDARD.encode(art.data)
+            )
+        })
+    };
 
     Ok(MediaInfoDto {
         path: info.path.display().to_string(),
         duration_ms: info.duration.map(|d| d.as_millis() as u64),
+        cover_art,
         metadata: MediaMetadataDto {
             title: info.metadata.title,
             artist: info.metadata.artist,
@@ -216,17 +314,7 @@ fn with_engine<T>(
 #[tauri::command]
 fn media_state(state: State<AppState>) -> Result<PlaybackStateDto, String> {
     let s = with_engine(&state, |e| e.state())?;
-    Ok(PlaybackStateDto {
-        status: match s.status {
-            go_media::PlaybackStatus::Stopped => "stopped",
-            go_media::PlaybackStatus::Playing => "playing",
-            go_media::PlaybackStatus::Paused => "paused",
-            go_media::PlaybackStatus::Ended => "ended",
-            go_media::PlaybackStatus::Error => "error",
-        },
-        position_ms: s.position.as_millis() as u64,
-        duration_ms: s.duration.map(|d| d.as_millis() as u64),
-    })
+    Ok(PlaybackStateDto::from(s))
 }
 
 #[tauri::command]
@@ -245,6 +333,9 @@ fn media_stop(state: State<AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
         if let Ok(mut g) = state.video_shown.lock() {
+            *g = false;
+        }
+        if let Ok(mut g) = state.surface_forced_hidden.lock() {
             *g = false;
         }
         if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
@@ -277,6 +368,46 @@ fn media_set_muted(state: State<AppState>, muted: bool) -> Result<(), String> {
         .ok_or("no media loaded")?
         .set_muted(muted)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn surface_set_visible(state: &State<AppState>, visible: bool) -> Result<(), String> {
+    if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
+        unsafe { video_surface::set_visible(surface, visible) };
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn surface_set_visible(_state: &State<AppState>, _visible: bool) -> Result<(), String> {
+    Ok(())
+}
+
+/// Hide mpv's video surface (used at EOF while rewinding to frame 0).
+#[tauri::command]
+fn media_surface_hide(state: State<AppState>) -> Result<(), String> {
+    #[cfg(windows)]
+    if let Ok(mut g) = state.surface_forced_hidden.lock() {
+        *g = true;
+    }
+    surface_set_visible(&state, false)
+}
+
+/// Restore mpv's surface visibility per the current media kind.
+#[tauri::command]
+fn media_surface_show(state: State<AppState>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if let Ok(mut g) = state.surface_forced_hidden.lock() {
+            *g = false;
+        }
+        if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
+            unsafe {
+                video_surface::set_visible(surface, effective_surface_visible(&state));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn reposition_video_surface(state: &AppState, window: &Window) {
@@ -318,6 +449,8 @@ pub fn run() {
             media_seek,
             media_set_volume,
             media_set_muted,
+            media_surface_hide,
+            media_surface_show,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Resized(_) = event {

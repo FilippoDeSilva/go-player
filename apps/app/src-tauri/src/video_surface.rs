@@ -7,42 +7,36 @@
 //! This module only repositions mpv's window: bottom of the sibling
 //! z-order, full client size, shown for video / hidden for audio.
 //!
+//! Discovery is event-driven: a `SetWinEventHook` (filtered to this
+//! process) fires the instant mpv creates its window — no polling. The
+//! hook stays installed afterwards as a "guardian": mpv re-asserts its
+//! own visibility and z-order when tracks start or frames change, so
+//! every subsequent window event on that hwnd re-runs our configuration.
+//!
 //! Safety: callers must pass valid window handles. mpv's window is
 //! created on mpv's own thread, so every call here must be short and
 //! must not hold locks across it.
 
 #![allow(unsafe_code)]
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
+
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Gdi::CreateSolidBrush;
+use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GW_CHILD, GW_HWNDNEXT, GetClassNameW, GetClientRect, GetWindow, HWND_BOTTOM,
-    HWND_TOP, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow,
+    DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, EnumChildWindows, GCLP_HBRBACKGROUND,
+    GetClassNameW, GetClientRect, GetParent, HWND_BOTTOM, HWND_TOP, MSG, OBJID_WINDOW, PM_REMOVE,
+    PeekMessageW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetClassLongPtrW,
+    SetWindowPos, ShowWindow, TranslateMessage, WINEVENT_OUTOFCONTEXT,
 };
 use windows::core::BOOL;
 
 /// Handle to mpv's child window, stored as `isize`.
 #[derive(Debug, Clone, Copy)]
 pub struct VideoSurfaceHwnd(pub isize);
-
-/// Find the `mpv` class child window under `parent`, if mpv has created
-/// it yet. Returns `None` while playback has not initialized a VO.
-pub unsafe fn find_mpv_child(parent: HWND) -> Option<HWND> {
-    let mut child = unsafe { GetWindow(parent, GW_CHILD) }.ok()?;
-    if child.0.is_null() {
-        return None;
-    }
-    loop {
-        let mut buf = [0u16; 64];
-        let len = unsafe { GetClassNameW(child, &mut buf) } as usize;
-        if String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case("mpv") {
-            return Some(child);
-        }
-        match unsafe { GetWindow(child, GW_HWNDNEXT) } {
-            Ok(next) if !next.0.is_null() => child = next,
-            _ => return None,
-        }
-    }
-}
 
 /// Push mpv's window to the bottom of the sibling z-order so the
 /// (transparent) webview composites above it.
@@ -91,25 +85,6 @@ fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..len])
 }
 
-/// Log every descendant window's class for z-order diagnostics.
-pub unsafe fn dump_children(parent: HWND) {
-    let mut kids: Vec<HWND> = Vec::new();
-    let _ = unsafe {
-        EnumChildWindows(
-            Some(parent),
-            Some(collect_children),
-            LPARAM(&mut kids as *mut Vec<HWND> as isize),
-        )
-    };
-    for k in kids {
-        eprintln!(
-            "[go-player] child hwnd={} class={}",
-            k.0 as isize,
-            class_name(k)
-        );
-    }
-}
-
 /// Bring the webview hierarchy to the top of the sibling z-order, above
 /// mpv's window. `WRY_WEBVIEW` is the direct child of the main window
 /// that competes with mpv's window; the `Chrome_Widget*` descendants
@@ -150,4 +125,160 @@ pub unsafe fn set_visible(hwnd: VideoSurfaceHwnd, visible: bool) {
             if visible { SW_SHOW } else { SW_HIDE },
         )
     };
+}
+
+/// Paint mpv's window background pure black. Between EOF and the
+/// auto-rewind there is a moment with no frame to draw; without this the
+/// window's default class brush can show as a grey rectangle.
+pub unsafe fn set_black_background(hwnd: VideoSurfaceHwnd) {
+    let brush = unsafe { CreateSolidBrush(COLORREF(0)) };
+    let _ =
+        unsafe { SetClassLongPtrW(HWND(hwnd.0 as *mut _), GCLP_HBRBACKGROUND, brush.0 as isize) };
+}
+
+/// Context shared with the WinEvent callback. Callbacks for
+/// `WINEVENT_OUTOFCONTEXT` hooks are delivered through the message queue
+/// of the thread that installed the hook, so the context lives in a
+/// `thread_local` on that thread.
+struct WinEventCtx {
+    parent: HWND,
+    found: Option<HWND>,
+    /// Once discovered, the mpv surface hwnd — later events on it mark
+    /// `dirty` so the guardian re-applies our window configuration.
+    surface: Option<HWND>,
+    dirty: bool,
+}
+
+thread_local! {
+    static WIN_EVENT_CTX: RefCell<Option<WinEventCtx>> = const { RefCell::new(None) };
+}
+
+unsafe extern "system" fn win_event_proc(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    _id_child: i32,
+    _id_thread: u32,
+    _time: u32,
+) {
+    // OBJID_WINDOW marks events about the window itself (not children).
+    if id_object != OBJID_WINDOW.0 {
+        return;
+    }
+    if !class_name(hwnd).eq_ignore_ascii_case("mpv") {
+        return;
+    }
+    WIN_EVENT_CTX.with(|c| {
+        let mut b = c.borrow_mut();
+        if let Some(ctx) = b.as_mut() {
+            if ctx.surface.map(|h| h.0 == hwnd.0).unwrap_or(false) {
+                ctx.dirty = true;
+                return;
+            }
+            let is_child = unsafe { GetParent(hwnd) }
+                .map(|p| p.0 == ctx.parent.0)
+                .unwrap_or(false);
+            if is_child {
+                ctx.found = Some(hwnd);
+            }
+        }
+    });
+}
+
+/// Find mpv's `mpv`-class child window under `parent` (event-driven via
+/// `SetWinEventHook`, filtered to this process), invoke `configure` once
+/// with it, then keep guarding: mpv re-asserts its own visibility and
+/// z-order when tracks start or frames change, so every subsequent window
+/// event on that hwnd — plus a slow periodic re-assert — re-runs
+/// `configure`. This thread never returns; it lives for the app's
+/// lifetime and costs one `PeekMessage` pump per ~5ms while idle.
+///
+/// `WINEVENT_OUTOFCONTEXT` callbacks are delivered through this thread's
+/// message queue, which is why the pump lives here.
+pub unsafe fn manage_mpv_child(
+    parent: HWND,
+    timeout: Duration,
+    mut configure: impl FnMut(HWND) + Send + 'static,
+) {
+    WIN_EVENT_CTX.with(|c| {
+        *c.borrow_mut() = Some(WinEventCtx {
+            parent,
+            found: None,
+            surface: None,
+            dirty: false,
+        });
+    });
+
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_SHOW,
+            None,
+            Some(win_event_proc),
+            GetCurrentProcessId(),
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+
+    let mut msg = MSG::default();
+    let deadline = Instant::now() + timeout;
+
+    // Phase 1: wait for mpv's child window to be created.
+    let child = loop {
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        let hit = WIN_EVENT_CTX.with(|c| c.borrow().as_ref().and_then(|x| x.found));
+        if hit.is_some() || Instant::now() >= deadline {
+            break hit;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+
+    let Some(child) = child else {
+        unsafe {
+            let _ = UnhookWinEvent(hook);
+        }
+        WIN_EVENT_CTX.with(|c| *c.borrow_mut() = None);
+        eprintln!("[go-player] warning: mpv child window not found");
+        return;
+    };
+
+    // Phase 2: configure once, then guard forever.
+    WIN_EVENT_CTX.with(|c| {
+        if let Some(ctx) = c.borrow_mut().as_mut() {
+            ctx.surface = Some(child);
+        }
+    });
+    configure(child);
+
+    let mut last_enforce = Instant::now();
+    loop {
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        let dirty = WIN_EVENT_CTX.with(|c| {
+            let mut b = c.borrow_mut();
+            let d = b.as_ref().map(|x| x.dirty).unwrap_or(false);
+            if let Some(ctx) = b.as_mut() {
+                ctx.dirty = false;
+            }
+            d
+        });
+        // Re-assert on mpv's own window events, plus a slow heartbeat in
+        // case an event is ever missed (e.g. during heavy decode load).
+        if dirty || last_enforce.elapsed() > Duration::from_millis(500) {
+            last_enforce = Instant::now();
+            configure(child);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
