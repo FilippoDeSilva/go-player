@@ -47,10 +47,34 @@ pub struct TrackInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaMetadata {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub year: Option<u32>,
+    pub genre: Option<String>,
+    pub comment: Option<String>,
+}
+
+impl Default for MediaMetadata {
+    fn default() -> Self {
+        Self {
+            title: None,
+            artist: None,
+            album: None,
+            year: None,
+            genre: None,
+            comment: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaInfo {
     pub path: PathBuf,
     pub duration: Option<Duration>,
     pub tracks: Vec<TrackInfo>,
+    pub metadata: MediaMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

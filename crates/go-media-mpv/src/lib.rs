@@ -97,12 +97,43 @@ impl PlaybackEngine for MpvPlaybackEngine {
             .filter(|d| d.is_finite() && *d > 0.0)
             .map(Duration::from_secs_f64);
 
+        // Extract metadata from mpv's metadata property (a map of key/value pairs).
+        // Common keys: title, artist, album, date, genre, comment.
+        let metadata = go_media::MediaMetadata {
+            title: self
+                .mpv
+                .get_property::<String>("metadata/by-key/title")
+                .ok(),
+            artist: self
+                .mpv
+                .get_property::<String>("metadata/by-key/artist")
+                .ok(),
+            album: self
+                .mpv
+                .get_property::<String>("metadata/by-key/album")
+                .ok(),
+            year: self
+                .mpv
+                .get_property::<String>("metadata/by-key/date")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok()),
+            genre: self
+                .mpv
+                .get_property::<String>("metadata/by-key/genre")
+                .ok(),
+            comment: self
+                .mpv
+                .get_property::<String>("metadata/by-key/comment")
+                .ok(),
+        };
+
         // Track enumeration requires parsing mpv's track-list node; that
         // lands with the demuxer-facing work. For now report an empty list.
         Ok(MediaInfo {
             path: source.to_path_buf(),
             duration,
             tracks: Vec::new(),
+            metadata,
         })
     }
 

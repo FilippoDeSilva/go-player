@@ -25,9 +25,20 @@ struct MediaBackendInfo {
 }
 
 #[derive(Serialize)]
+struct MediaMetadataDto {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    year: Option<u32>,
+    genre: Option<String>,
+    comment: Option<String>,
+}
+
+#[derive(Serialize)]
 struct MediaInfoDto {
     path: String,
     duration_ms: Option<u64>,
+    metadata: MediaMetadataDto,
 }
 
 #[derive(Serialize)]
@@ -131,6 +142,14 @@ fn open_media(
     Ok(MediaInfoDto {
         path: info.path.display().to_string(),
         duration_ms: info.duration.map(|d| d.as_millis() as u64),
+        metadata: MediaMetadataDto {
+            title: info.metadata.title,
+            artist: info.metadata.artist,
+            album: info.metadata.album,
+            year: info.metadata.year,
+            genre: info.metadata.genre,
+            comment: info.metadata.comment,
+        },
     })
 }
 

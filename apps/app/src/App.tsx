@@ -2,9 +2,31 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import {
+  Play,
+  Pause,
+  FolderOpen,
+  ChevronDown,
+  Rewind,
+  FastForward,
+  Square,
+  Minus,
+  Maximize2,
+  Minimize2,
+  X,
+  Volume2,
+  VolumeX,
+  Shuffle,
+  Repeat,
+  Maximize,
+  MoreHorizontal,
+  Music,
+  Subtitles,
+} from "lucide-solid";
 import type {
   MediaBackendInfo,
   MediaInfoDto,
+  MediaMetadata,
   PlaybackState,
   SubtitleSummary,
 } from "@go-player/contracts";
@@ -53,59 +75,6 @@ const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 const extOf = (p: string) => p.split(".").pop()?.toLowerCase() ?? "";
 const isAudio = (p: string) => AUDIO_EXTS.includes(extOf(p));
 
-/* ---------------- icons ---------------- */
-type IconName =
-  | "play"
-  | "pause"
-  | "folder"
-  | "subs"
-  | "music"
-  | "chevron"
-  | "back10"
-  | "fwd10"
-  | "stop"
-  | "min"
-  | "max"
-  | "restore"
-  | "close";
-
-const PATHS: Record<IconName, string> = {
-  play: "M8 5.5v13l11-6.5z",
-  pause: "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z",
-  folder:
-    "M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2.5h9A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z",
-  subs: "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm2.5 4.5v1.8h3v1.4h-3v1.8H6V11H3.5V9.5H6V8zm6.5 0c1.1 0 2 .9 2 2v.5c0 1.1-.9 2-2 2h-.8v1.8H10.7v-5.3zm.2 1.5h-.5v1.3h.5c.3 0 .5-.2.5-.6v-.1c0-.4-.2-.6-.5-.6zM17 9.5l1.8 3.3L20.6 9.5h1.4l-2.4 4 2.4 4h-1.4l-1.8-3.3-1.8 3.3h-1.4l2.4-4-2.4-4z",
-  music:
-    "M9 18V5.5L20 3v12.5M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zm11-5.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
-  chevron: "M6 9.5l6 6 6-6",
-  back10: "M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7zm-1 5h5v5h-2v-3h-3z",
-  fwd10: "M12 5V2l5 4-5 4V7a5 5 0 1 0 5 5h2a7 7 0 1 1-7-7zm1 5h-5v5H10v-3h3z",
-  stop: "M6 6h12v12H6z",
-  min: "M5 12h14",
-  max: "M6 6h12v12H6z",
-  restore: "M8 8h10v10H8zM6 14V4h10",
-  close: "M6 6l12 12M18 6L6 18",
-};
-
-const STROKE_ICONS = new Set<IconName>(["min", "max", "restore", "close"]);
-
-function Icon(props: { name: IconName; class?: string }) {
-  const stroke = () => STROKE_ICONS.has(props.name);
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill={stroke() ? "none" : "currentColor"}
-      stroke={stroke() ? "currentColor" : "none"}
-      stroke-width={stroke() ? 2 : undefined}
-      stroke-linecap={stroke() ? "round" : undefined}
-      class={props.class ?? "h-4 w-4"}
-      aria-hidden="true"
-    >
-      <path d={PATHS[props.name]} />
-    </svg>
-  );
-}
-
 /* ---------------- app ---------------- */
 function App() {
   const [backend, setBackend] = createSignal<MediaBackendInfo | null>(null);
@@ -117,6 +86,8 @@ function App() {
   const [error, setError] = createSignal<string | null>(null);
   const [controlsVisible, setControlsVisible] = createSignal(true);
   const [menuOpen, setMenuOpen] = createSignal(false);
+  const [volume, setVolume] = createSignal(100);
+  const [muted, setMuted] = createSignal(false);
 
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   const pokeControls = () => {
@@ -191,6 +162,11 @@ function App() {
   const seekTo = (ms: number) =>
     void invoke("media_seek", { positionMs: ms }).catch((e) => setError(String(e)));
   const seekBy = (delta: number) => seekTo(Math.max(0, (pb()?.position_ms ?? 0) + delta));
+  const toggleMute = () => setMuted((v) => !v);
+  const setVolumeLevel = (v: number) => {
+    setVolume(v);
+    setMuted(false);
+  };
 
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -237,6 +213,7 @@ function App() {
   return (
     <main
       class="relative flex h-full flex-col overflow-hidden select-none"
+      data-media-kind={mediaKind()}
       style={{ background: "var(--bg)", color: "var(--text)" }}
       onMouseMove={pokeControls}
     >
@@ -258,7 +235,7 @@ function App() {
               color: "#fff",
             }}
           >
-            <Icon name="play" class="ml-px h-3 w-3" />
+            <Play class="ml-px h-3 w-3" />
           </span>
           <h1 class="text-[13px] font-semibold tracking-wide" data-tauri-drag-region>
             Go Player
@@ -270,15 +247,15 @@ function App() {
           <div class="relative flex items-center">
             <button
               onClick={() => void pickFiles("media")}
-              class="flex h-7 items-center gap-1.5 rounded-l-lg pl-2.5 pr-2 text-xs font-medium transition hover:brightness-110 active:scale-[0.98]"
+              class="flex h-7 items-center gap-1.5 rounded-l-lg pl-2.5 pr-2 text-xs font-medium transition hover:brightness-110 active:scale-[0.98] cursor-pointer"
               style={{ background: "var(--hover)", color: "var(--text)" }}
             >
-              <Icon name="folder" class="h-3.5 w-3.5" />
+              <FolderOpen class="h-3.5 w-3.5" />
               Open
             </button>
             <button
               onClick={() => setMenuOpen((v) => !v)}
-              class="flex h-7 w-6 items-center justify-center rounded-r-lg border-l transition hover:brightness-110 active:scale-[0.98]"
+              class="flex h-7 w-6 items-center justify-center rounded-r-lg border-l transition hover:brightness-110 active:scale-[0.98] cursor-pointer"
               style={{
                 background: "var(--hover)",
                 color: "var(--text-dim)",
@@ -288,8 +265,7 @@ function App() {
               aria-expanded={menuOpen()}
               aria-label="More open options"
             >
-              <Icon
-                name="chevron"
+              <ChevronDown
                 class={`h-3 w-3 transition-transform duration-200 ${menuOpen() ? "rotate-180" : ""}`}
               />
             </button>
@@ -305,13 +281,13 @@ function App() {
               role="menu"
             >
               <MenuItem
-                icon="folder"
+                icon={<FolderOpen class="h-4 w-4 opacity-70" />}
                 label="Open Media…"
                 hint="Ctrl+O"
                 onClick={() => void pickFiles("media")}
               />
               <MenuItem
-                icon="subs"
+                icon={<Subtitles class="h-4 w-4 opacity-70" />}
                 label="Open Subtitles…"
                 onClick={() => void pickFiles("subs")}
               />
@@ -346,7 +322,11 @@ function App() {
                   color: "var(--text-dim)",
                 }}
               >
-                <Icon name={mediaKind() === "audio" ? "music" : "folder"} class="h-9 w-9" />
+                {mediaKind() === "audio" ? (
+                  <Music class="h-9 w-9" />
+                ) : (
+                  <FolderOpen class="h-9 w-9" />
+                )}
               </div>
               <p class="text-lg font-medium" style={{ color: "var(--text-dim)" }}>
                 No media loaded
@@ -360,27 +340,162 @@ function App() {
             </div>
           }
         >
-          {/* Audio-only artwork */}
+          {/* Audio-only modern player */}
           <Show when={mediaKind() === "audio"}>
-            <div class="anim-fade-up flex flex-col items-center gap-4">
+            <div class="anim-fade-up flex h-full w-full max-w-4xl flex-col items-center justify-center gap-6 px-8">
+              {/* Album art / poster */}
               <div
-                class="flex h-36 w-36 items-center justify-center rounded-[2rem] border shadow-2xl"
+                class="relative flex h-64 w-64 shrink-0 items-center justify-center rounded-3xl border shadow-2xl"
                 style={{
                   "border-color": "var(--border)",
                   background: "var(--panel-solid)",
                   color: "var(--accent)",
-                  "box-shadow": "0 24px 80px rgba(0,0,0,0.45)",
+                  "box-shadow": "0 32px 80px rgba(0,0,0,0.5)",
                 }}
               >
-                <Icon name="music" class="h-16 w-16" />
+                <Music class="h-24 w-24" />
               </div>
+
+              {/* Song info */}
               <div class="text-center">
-                <p class="max-w-md truncate text-lg font-semibold">
-                  {media() ? fileName(media()!.path) : ""}
+                <h2 class="max-w-lg truncate text-2xl font-semibold">
+                  {media()?.metadata.title || fileName(media()!.path)}
+                </h2>
+                <p class="mt-1 text-lg" style={{ color: "var(--text-dim)" }}>
+                  {media()?.metadata.artist || "Unknown Artist"}
                 </p>
-                <p class="mt-0.5 text-xs" style={{ color: "var(--text-faint)" }}>
-                  {fmtTime(dur())}
-                </p>
+                <Show when={media()?.metadata.album}>
+                  <p class="mt-0.5 text-sm" style={{ color: "var(--text-faint)" }}>
+                    {media()!.metadata.album}
+                    <Show when={media()!.metadata.year}>{" · " + media()!.metadata.year}</Show>
+                  </p>
+                </Show>
+              </div>
+
+              {/* Progress bar */}
+              <div class="flex w-full max-w-lg flex-col gap-2">
+                <input
+                  type="range"
+                  class="seek flex-1"
+                  min="0"
+                  max="1000"
+                  value={dur() ? Math.round((pos() / dur()) * 1000) : 0}
+                  onInput={(e) =>
+                    dur() && seekTo(Math.round((Number(e.currentTarget.value) / 1000) * dur()))
+                  }
+                  disabled={!media()}
+                  aria-label="Seek"
+                />
+                <div
+                  class="flex justify-between text-xs tabular-nums"
+                  style={{ color: "var(--text-faint)" }}
+                >
+                  <span>{fmtTime(pos())}</span>
+                  <span>{fmtTime(dur())}</span>
+                </div>
+              </div>
+
+              {/* Playback controls */}
+              <div class="flex items-center gap-4">
+                <button
+                  class="flex h-10 w-10 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 cursor-pointer"
+                  style={{ color: "var(--text-dim)" }}
+                  aria-label="Shuffle"
+                  title="Shuffle"
+                >
+                  <Shuffle class="h-5 w-5" />
+                </button>
+
+                <button
+                  onClick={() => seekBy(-10000)}
+                  disabled={!media()}
+                  class="flex h-12 w-12 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 disabled:opacity-30 cursor-pointer"
+                  style={{ color: "var(--text-dim)" }}
+                  aria-label="Previous track"
+                  title="Previous"
+                >
+                  <Rewind class="h-6 w-6" />
+                </button>
+
+                <button
+                  onClick={togglePlay}
+                  disabled={!media()}
+                  class="flex h-16 w-16 items-center justify-center rounded-full transition hover:scale-105 active:scale-95 disabled:opacity-30 cursor-pointer"
+                  style={{
+                    background: "linear-gradient(135deg, var(--accent), #a855f7)",
+                    color: "#fff",
+                    "box-shadow": "0 8px 24px rgba(168, 85, 247, 0.4)",
+                  }}
+                  aria-label={playing() ? "Pause" : "Play"}
+                >
+                  <Show when={playing()} fallback={<Play class="ml-0.5 h-7 w-7" />}>
+                    <Pause class="h-7 w-7" />
+                  </Show>
+                </button>
+
+                <button
+                  onClick={() => seekBy(10000)}
+                  disabled={!media()}
+                  class="flex h-12 w-12 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 disabled:opacity-30 cursor-pointer"
+                  style={{ color: "var(--text-dim)" }}
+                  aria-label="Next track"
+                  title="Next"
+                >
+                  <FastForward class="h-6 w-6" />
+                </button>
+
+                <button
+                  class="flex h-10 w-10 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 cursor-pointer"
+                  style={{ color: "var(--text-dim)" }}
+                  aria-label="Repeat"
+                  title="Repeat"
+                >
+                  <Repeat class="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Volume and extra controls */}
+              <div class="flex items-center gap-4">
+                <button
+                  onClick={toggleMute}
+                  class="flex h-8 w-8 items-center justify-center rounded-lg transition hover:brightness-125 active:scale-95 cursor-pointer"
+                  style={{ color: "var(--text-dim)" }}
+                  aria-label={muted() ? "Unmute" : "Mute"}
+                  title={muted() ? "Unmute" : "Mute"}
+                >
+                  <Show when={muted()} fallback={<Volume2 class="h-4 w-4" />}>
+                    <VolumeX class="h-4 w-4" />
+                  </Show>
+                </button>
+
+                <input
+                  type="range"
+                  class="w-24 cursor-pointer"
+                  min="0"
+                  max="100"
+                  value={muted() ? 0 : volume()}
+                  onInput={(e) => setVolumeLevel(Number(e.currentTarget.value))}
+                  disabled={!media()}
+                  aria-label="Volume"
+                />
+
+                <button
+                  class="flex h-8 w-8 items-center justify-center rounded-lg transition hover:brightness-125 active:scale-95 cursor-pointer"
+                  style={{ color: "var(--text-dim)" }}
+                  aria-label="Fullscreen"
+                  title="Fullscreen"
+                >
+                  <Maximize class="h-4 w-4" />
+                </button>
+
+                <button
+                  class="flex h-8 w-8 items-center justify-center rounded-lg transition hover:brightness-125 active:scale-95 cursor-pointer"
+                  style={{ color: "var(--text-dim)" }}
+                  aria-label="More options"
+                  title="More"
+                >
+                  <MoreHorizontal class="h-4 w-4" />
+                </button>
               </div>
             </div>
           </Show>
@@ -397,18 +512,18 @@ function App() {
                 when={mediaKind() === "video"}
                 fallback={
                   <span
-                    class="flex h-20 w-20 items-center justify-center rounded-full backdrop-blur-md transition hover:scale-105"
+                    class="flex h-20 w-20 items-center justify-center rounded-full backdrop-blur-md transition hover:scale-105 cursor-pointer"
                     style={{ background: "var(--hover)", color: "var(--text)" }}
                   >
-                    <Icon name="play" class="ml-1 h-9 w-9" />
+                    <Play class="ml-1 h-9 w-9" />
                   </span>
                 }
               >
                 <span
-                  class="flex h-20 w-20 items-center justify-center rounded-full backdrop-blur-md transition hover:scale-105"
+                  class="flex h-20 w-20 items-center justify-center rounded-full backdrop-blur-md transition hover:scale-105 cursor-pointer"
                   style={{ background: "var(--hover)", color: "var(--text)" }}
                 >
-                  <Icon name="play" class="ml-1 h-9 w-9" />
+                  <Play class="ml-1 h-9 w-9" />
                 </span>
               </Show>
             </button>
@@ -463,79 +578,86 @@ function App() {
         )}
       </Show>
 
-      {/* Control bar */}
-      <footer
-        class="flex h-14 shrink-0 items-center gap-2 border-t px-4 backdrop-blur transition-opacity duration-300"
-        style={{
-          "border-color": "var(--border)",
-          background: "var(--panel)",
-          opacity: controlsVisible() || !playing() ? 1 : 0,
-        }}
-      >
-        <button
-          onClick={() => seekBy(-10000)}
-          disabled={!media()}
-          class="flex h-9 w-9 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 disabled:opacity-30"
-          style={{ color: "var(--text-dim)" }}
-          aria-label="Back 10 seconds"
-          title="Back 10s"
+      {/* Control bar (video only) */}
+      <Show when={mediaKind() === "video"}>
+        <footer
+          class="flex h-14 shrink-0 items-center gap-2 border-t px-4 backdrop-blur transition-opacity duration-300"
+          style={{
+            "border-color": "var(--border)",
+            background: "var(--panel)",
+            opacity: controlsVisible() || !playing() ? 1 : 0,
+          }}
         >
-          <Icon name="back10" />
-        </button>
+          <button
+            onClick={() => seekBy(-10000)}
+            disabled={!media()}
+            class="flex h-9 w-9 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 disabled:opacity-30 cursor-pointer"
+            style={{ color: "var(--text-dim)" }}
+            aria-label="Back 10 seconds"
+            title="Back 10s"
+          >
+            <Rewind />
+          </button>
 
-        <button
-          onClick={togglePlay}
-          disabled={!media()}
-          class="flex h-10 w-10 items-center justify-center rounded-full transition hover:scale-105 active:scale-95 disabled:opacity-30"
-          style={{ background: "var(--text)", color: "var(--bg)" }}
-          aria-label={playing() ? "Pause" : "Play"}
-        >
-          <Icon name={playing() ? "pause" : "play"} class="h-4.5 w-4.5" />
-        </button>
+          <button
+            onClick={togglePlay}
+            disabled={!media()}
+            class="flex h-10 w-10 items-center justify-center rounded-full transition hover:scale-105 active:scale-95 disabled:opacity-30 cursor-pointer"
+            style={{ background: "var(--text)", color: "var(--bg)" }}
+            aria-label={playing() ? "Pause" : "Play"}
+          >
+            <Show when={playing()} fallback={<Play class="h-4.5 w-4.5" />}>
+              <Pause class="h-4.5 w-4.5" />
+            </Show>
+          </button>
 
-        <button
-          onClick={() => seekBy(10000)}
-          disabled={!media()}
-          class="flex h-9 w-9 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 disabled:opacity-30"
-          style={{ color: "var(--text-dim)" }}
-          aria-label="Forward 10 seconds"
-          title="Forward 10s"
-        >
-          <Icon name="fwd10" />
-        </button>
+          <button
+            onClick={() => seekBy(10000)}
+            disabled={!media()}
+            class="flex h-9 w-9 items-center justify-center rounded-full transition hover:brightness-125 active:scale-95 disabled:opacity-30 cursor-pointer"
+            style={{ color: "var(--text-dim)" }}
+            aria-label="Forward 10 seconds"
+            title="Forward 10s"
+          >
+            <FastForward />
+          </button>
 
-        <span class="w-10 text-right text-[11px] tabular-nums" style={{ color: "var(--text-dim)" }}>
-          {fmtTime(pos())}
-        </span>
+          <span
+            class="w-10 text-right text-[11px] tabular-nums"
+            style={{ color: "var(--text-dim)" }}
+          >
+            {fmtTime(pos())}
+          </span>
 
-        <input
-          type="range"
-          class="seek flex-1"
-          min="0"
-          max="1000"
-          value={dur() ? Math.round((pos() / dur()) * 1000) : 0}
-          onInput={(e) =>
-            dur() && seekTo(Math.round((Number(e.currentTarget.value) / 1000) * dur()))
-          }
-          disabled={!media()}
-          aria-label="Seek"
-        />
+          <input
+            type="range"
+            class="seek flex-1"
+            min="0"
+            max="1000"
+            value={dur() ? Math.round((pos() / dur()) * 1000) : 0}
+            onInput={(e) =>
+              dur() && seekTo(Math.round((Number(e.currentTarget.value) / 1000) * dur()))
+            }
+            disabled={!media()}
+            aria-label="Seek"
+          />
 
-        <span class="w-10 text-[11px] tabular-nums" style={{ color: "var(--text-faint)" }}>
-          {fmtTime(dur())}
-        </span>
+          <span class="w-10 text-[11px] tabular-nums" style={{ color: "var(--text-faint)" }}>
+            {fmtTime(dur())}
+          </span>
 
-        <button
-          onClick={stop}
-          disabled={!media()}
-          class="flex h-8 w-8 items-center justify-center rounded-lg transition hover:brightness-125 active:scale-95 disabled:opacity-30"
-          style={{ color: "var(--text-dim)" }}
-          aria-label="Stop"
-          title="Stop"
-        >
-          <Icon name="stop" class="h-3.5 w-3.5" />
-        </button>
-      </footer>
+          <button
+            onClick={stop}
+            disabled={!media()}
+            class="flex h-8 w-8 items-center justify-center rounded-lg transition hover:brightness-125 active:scale-95 disabled:opacity-30 cursor-pointer"
+            style={{ color: "var(--text-dim)" }}
+            aria-label="Stop"
+            title="Stop"
+          >
+            <Square class="h-3.5 w-3.5" />
+          </button>
+        </footer>
+      </Show>
     </main>
   );
 }
@@ -552,7 +674,7 @@ function WindowControls() {
   });
 
   const btn =
-    "flex h-8 w-11 items-center justify-center transition-colors hover:bg-white/10 active:bg-white/15";
+    "flex h-8 w-11 items-center justify-center transition-colors hover:bg-white/10 active:bg-white/15 cursor-pointer";
 
   return (
     <div class="flex items-stretch">
@@ -562,7 +684,7 @@ function WindowControls() {
         aria-label="Minimize"
         title="Minimize"
       >
-        <Icon name="min" class="h-3.5 w-3.5" />
+        <Minimize2 class="h-3.5 w-3.5" />
       </button>
       <button
         class={btn}
@@ -570,7 +692,9 @@ function WindowControls() {
         aria-label={maximized() ? "Restore" : "Maximize"}
         title={maximized() ? "Restore" : "Maximize"}
       >
-        <Icon name={maximized() ? "restore" : "max"} class="h-3 w-3" />
+        <Show when={maximized()} fallback={<Maximize2 class="h-3 w-3" />}>
+          <Minimize2 class="h-3 w-3" />
+        </Show>
       </button>
       <button
         class={`${btn} hover:!bg-red-500/90 hover:!text-white`}
@@ -578,23 +702,23 @@ function WindowControls() {
         aria-label="Close"
         title="Close"
       >
-        <Icon name="close" class="h-3.5 w-3.5" />
+        <X class="h-3.5 w-3.5" />
       </button>
     </div>
   );
 }
 
-function MenuItem(props: { icon: IconName; label: string; hint?: string; onClick: () => void }) {
+function MenuItem(props: { icon: any; label: string; hint?: string; onClick: () => void }) {
   return (
     <button
       role="menuitem"
       onClick={props.onClick}
-      class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs transition hover:brightness-110"
+      class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs transition hover:brightness-110 cursor-pointer"
       style={{ color: "var(--text)" }}
       onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--hover)")}
       onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
     >
-      <Icon name={props.icon} class="h-4 w-4 opacity-70" />
+      {props.icon}
       <span class="flex-1">{props.label}</span>
       {props.hint && (
         <kbd class="text-[10px]" style={{ color: "var(--text-faint)" }}>

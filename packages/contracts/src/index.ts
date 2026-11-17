@@ -32,9 +32,19 @@ export interface PlaybackState {
   duration_ms: number | null;
 }
 
+export interface MediaMetadata {
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  year: number | null;
+  genre: string | null;
+  comment: string | null;
+}
+
 export interface MediaInfoDto {
   path: string;
   duration_ms: number | null;
+  metadata: MediaMetadata;
 }
 
 export type MediaBackend = "mpv" | "other";
