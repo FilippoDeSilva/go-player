@@ -362,12 +362,12 @@ export default function App() {
   const seekPct = () => (dur() ? (pos() / dur()) * 100 : 0);
 
   const topBarClass = () =>
-    `absolute inset-x-0 top-0 z-30 transition-all duration-300 ${
+    `absolute inset-x-0 top-0 z-30 transition-[opacity,transform] duration-300 ease-out ${
       barsShown() ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"
     }`;
 
   const bottomBarClass = () =>
-    `absolute inset-x-0 bottom-0 z-30 transition-all duration-300 ${
+    `absolute inset-x-0 bottom-0 z-30 transition-[opacity,transform] duration-300 ease-out ${
       barsShown() ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-8 opacity-0"
     }`;
 
@@ -549,7 +549,7 @@ export default function App() {
         <Show when={subtitle()}>
           {(s) => (
             <div
-              class="border-t px-4 py-1.5 text-[11px] backdrop-blur-xl backdrop-saturate-150"
+              class="border-t px-4 py-1.5 text-[11px]"
               style={{
                 "border-color": "var(--border)",
                 background: "color-mix(in srgb, var(--bg) 38%, transparent)",
@@ -566,7 +566,7 @@ export default function App() {
         <Show when={error()}>
           {(e) => (
             <div
-              class="border-t px-4 py-1.5 text-[11px] backdrop-blur-xl backdrop-saturate-150"
+              class="border-t px-4 py-1.5 text-[11px]"
               style={{
                 "border-color": "var(--border)",
                 "border-top-color": "#ef444466",

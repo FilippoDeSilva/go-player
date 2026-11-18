@@ -22,15 +22,16 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT};
-use windows::Win32::Graphics::Gdi::CreateSolidBrush;
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, POINT, RECT};
+use windows::Win32::Graphics::Gdi::{ClientToScreen, CreateSolidBrush};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, EnumChildWindows, GCLP_HBRBACKGROUND,
-    GetClassNameW, GetClientRect, GetParent, HWND_BOTTOM, HWND_TOP, MSG, OBJID_WINDOW, PM_REMOVE,
-    PeekMessageW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetClassLongPtrW,
-    SetWindowPos, ShowWindow, TranslateMessage, WINEVENT_OUTOFCONTEXT,
+    GetClassNameW, GetClientRect, GetParent, GetWindowRect, HWND_BOTTOM, HWND_TOP, IsWindowVisible,
+    MSG, OBJID_WINDOW, PM_REMOVE, PeekMessageW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SetClassLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
+    WINEVENT_OUTOFCONTEXT,
 };
 use windows::core::BOOL;
 
@@ -54,20 +55,42 @@ pub unsafe fn set_bottom(hwnd: VideoSurfaceHwnd) {
     };
 }
 
-/// Resize mpv's window to the parent's full client rect.
+/// Resize mpv's window to the parent's full client rect. Compares the
+/// current window rect first so the guardian's periodic re-assert is a
+/// true no-op in steady state — an unconditional `SetWindowPos` sends
+/// WM_WINDOWPOSCHANGED, which makes mpv re-render a frame and flickers.
 pub unsafe fn resize_to_parent(parent: HWND, hwnd: VideoSurfaceHwnd) {
     let mut rc = RECT::default();
     if unsafe { GetClientRect(parent, &mut rc) }.is_err() {
+        return;
+    }
+    let mut tl = POINT {
+        x: rc.left,
+        y: rc.top,
+    };
+    let mut br = POINT {
+        x: rc.right,
+        y: rc.bottom,
+    };
+    unsafe {
+        let _ = ClientToScreen(parent, &mut tl);
+        let _ = ClientToScreen(parent, &mut br);
+    }
+    let mut cur = RECT::default();
+    if unsafe { GetWindowRect(HWND(hwnd.0 as *mut _), &mut cur) }.is_err() {
+        return;
+    }
+    if cur.left == tl.x && cur.top == tl.y && cur.right == br.x && cur.bottom == br.y {
         return;
     }
     let _ = unsafe {
         SetWindowPos(
             HWND(hwnd.0 as *mut _),
             None,
-            rc.left,
-            rc.top,
-            rc.right - rc.left,
-            rc.bottom - rc.top,
+            tl.x,
+            tl.y,
+            br.x - tl.x,
+            br.y - tl.y,
             SWP_NOACTIVATE,
         )
     };
@@ -117,20 +140,30 @@ pub unsafe fn bring_webview_to_top(parent: HWND) {
     }
 }
 
-/// Show or hide mpv's window without changing its position.
+/// Show or hide mpv's window without changing its position. No-op when
+/// the window is already in the desired state — calling `ShowWindow`
+/// unconditionally every guardian tick generates window messages and
+/// repaints that show up as video flicker.
 pub unsafe fn set_visible(hwnd: VideoSurfaceHwnd, visible: bool) {
-    let _ = unsafe {
-        ShowWindow(
-            HWND(hwnd.0 as *mut _),
-            if visible { SW_SHOW } else { SW_HIDE },
-        )
-    };
+    let h = HWND(hwnd.0 as *mut _);
+    if unsafe { IsWindowVisible(h) }.as_bool() == visible {
+        return;
+    }
+    let _ = unsafe { ShowWindow(h, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }) };
 }
 
 /// Paint mpv's window background pure black. Between EOF and the
 /// auto-rewind there is a moment with no frame to draw; without this the
-/// window's default class brush can show as a grey rectangle.
+/// window's default class brush can show as a grey rectangle. Runs once:
+/// `CreateSolidBrush` allocates a GDI object, so repeating it leaks a
+/// brush every call.
 pub unsafe fn set_black_background(hwnd: VideoSurfaceHwnd) {
+    // Keyed by hwnd so a recreated mpv window still gets the brush,
+    // while repeat calls for the same window don't leak GDI brushes.
+    static DONE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+    if DONE.swap(hwnd.0, std::sync::atomic::Ordering::Relaxed) == hwnd.0 {
+        return;
+    }
     let brush = unsafe { CreateSolidBrush(COLORREF(0)) };
     let _ =
         unsafe { SetClassLongPtrW(HWND(hwnd.0 as *mut _), GCLP_HBRBACKGROUND, brush.0 as isize) };
@@ -199,7 +232,7 @@ unsafe extern "system" fn win_event_proc(
 pub unsafe fn manage_mpv_child(
     parent: HWND,
     timeout: Duration,
-    mut configure: impl FnMut(HWND) + Send + 'static,
+    mut configure: impl FnMut(HWND, bool) + Send + 'static,
 ) {
     WIN_EVENT_CTX.with(|c| {
         *c.borrow_mut() = Some(WinEventCtx {
@@ -249,13 +282,16 @@ pub unsafe fn manage_mpv_child(
         return;
     };
 
-    // Phase 2: configure once, then guard forever.
+    // Phase 2: configure once, then guard forever. `full` is true only
+    // for the initial pass and for mpv's own window events — the
+    // heartbeat passes false so it performs just the cheap, self-skipping
+    // geometry/visibility checks instead of churning z-order every tick.
     WIN_EVENT_CTX.with(|c| {
         if let Some(ctx) = c.borrow_mut().as_mut() {
             ctx.surface = Some(child);
         }
     });
-    configure(child);
+    configure(child, true);
 
     let mut last_enforce = Instant::now();
     loop {
@@ -275,9 +311,11 @@ pub unsafe fn manage_mpv_child(
         });
         // Re-assert on mpv's own window events, plus a slow heartbeat in
         // case an event is ever missed (e.g. during heavy decode load).
-        if dirty || last_enforce.elapsed() > Duration::from_millis(500) {
+        if dirty {
+            configure(child, true);
+        } else if last_enforce.elapsed() > Duration::from_millis(500) {
             last_enforce = Instant::now();
-            configure(child);
+            configure(child, false);
         }
         std::thread::sleep(Duration::from_millis(5));
     }

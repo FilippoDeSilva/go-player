@@ -149,13 +149,18 @@ fn ensure_mpv_surface(app: &tauri::AppHandle) {
         let parent = windows::Win32::Foundation::HWND(parent as *mut _);
         let parent_isize = parent.0 as isize;
         unsafe {
-            video_surface::manage_mpv_child(parent, Duration::from_secs(5), move |child| {
+            video_surface::manage_mpv_child(parent, Duration::from_secs(5), move |child, full| {
                 let parent = windows::Win32::Foundation::HWND(parent_isize as *mut _);
                 let surface = video_surface::VideoSurfaceHwnd(child.0 as isize);
                 let state = app.state::<AppState>();
-                video_surface::set_bottom(surface);
+                // Z-order churn is only needed when mpv re-asserts itself
+                // (dirty events); the heartbeat skips it — SetWindowPos on
+                // the webview every tick was itself a flicker source.
+                if full {
+                    video_surface::set_bottom(surface);
+                    video_surface::bring_webview_to_top(parent);
+                }
                 video_surface::resize_to_parent(parent, surface);
-                video_surface::bring_webview_to_top(parent);
                 video_surface::set_visible(surface, effective_surface_visible(&state));
                 video_surface::set_black_background(surface);
                 if state
