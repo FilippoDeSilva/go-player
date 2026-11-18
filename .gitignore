@@ -25,3 +25,4 @@ native/mpv/
 
 # Staged native runtime for bundling (produced by scripts/setup-mpv.*)
 apps/app/src-tauri/bundle-resources/
+.mpv-build/

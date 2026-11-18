@@ -1,0 +1,14 @@
+# Runtime search paths for natively bundled libraries.
+#
+# Bundle resources land in `$RESOURCE/lib/` (see `bundle.resources` in
+# tauri.*.conf.json). These RUNPATH entries cover every packaged layout:
+#   deb/rpm : /usr/bin/go-player   -> /usr/lib/go-player/lib
+#   AppImage: usr/bin/go-player    -> usr/lib/go-player/lib
+#   .app    : MacOS/go-player      -> ../Resources/lib (see macos conf)
+# On unpackaged dev runs the directory simply doesn't exist and the
+# loader falls through to system paths (libmpv-dev must be installed).
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN/../lib/go-player/lib"]
+
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/../Resources/lib"]
