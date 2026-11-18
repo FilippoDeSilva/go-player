@@ -58,6 +58,10 @@ jobs:
 
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseCommitish: ${{ github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
           # Optional updater signing — set these repo secrets to enable
