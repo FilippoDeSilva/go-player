@@ -31,7 +31,12 @@ $ApiRepo    = 'mpv-player/mpv'
 function Resolve-MpvVersion {
     param([string]$Want)
     if ($Want -ne 'latest') { return $Want }
-    $rel = Invoke-RestMethod "https://api.github.com/repos/$ApiRepo/releases/latest"
+    # GitHub's unauthenticated API is rate-limited per-IP; CI runners share
+    # IPs and hit the cap quickly. Pass PAT when
+    # available — any valid token raises the limit to 5000 req/hr.
+    $headers = @{ 'User-Agent' = 'go-player-setup-mpv' }
+    if ($env:PAT) { $headers['Authorization'] = "Bearer $env:PAT" }
+    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$ApiRepo/releases/latest" -Headers $headers
     return $rel.tag_name
 }
 

@@ -396,6 +396,8 @@ fn media_surface_hide(state: State<AppState>) -> Result<(), String> {
 /// Restore mpv's surface visibility per the current media kind.
 #[tauri::command]
 fn media_surface_show(state: State<AppState>) -> Result<(), String> {
+    #[cfg(not(windows))]
+    let _ = &state;
     #[cfg(windows)]
     {
         if let Ok(mut g) = state.surface_forced_hidden.lock() {

@@ -52,12 +52,14 @@ jobs:
       - name: Provision libmpv (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/setup-mpv.ps1
+        env:
+          PAT: ${{ secrets.PAT }}
+        run: ./scripts/setup-mpv.ps1 -Version v0.42.0
 
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
           # Optional updater signing — set these repo secrets to enable
           # signed updater artifacts:
           # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

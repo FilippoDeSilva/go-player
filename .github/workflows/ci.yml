@@ -57,7 +57,9 @@ jobs:
       - name: Provision libmpv (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/setup-mpv.ps1
+        env:
+          PAT: ${{ secrets.PAT }}
+        run: ./scripts/setup-mpv.ps1 -Version v0.42.0
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
