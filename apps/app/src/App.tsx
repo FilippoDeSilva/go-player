@@ -101,6 +101,11 @@ export default function App() {
   // True during the brief EOF→rewind window: mpv's surface is hidden and
   // the stage paints black so mpv's cleared (grey) frame never shows.
   const [eofHold, setEofHold] = createSignal(false);
+  // While the user drags the seek thumb, playback-state pushes must not
+  // fight the drag; the input shows the dragged value until release.
+  const [scrubbing, setScrubbing] = createSignal(false);
+  const [dragValue, setDragValue] = createSignal(0);
+  let lastSeekAt = 0;
 
   // Timestamp of the last user activity; a 500ms interval hides the
   // bars once it is older than UI_HIDE_MS. setTimeout proved unreliable
@@ -459,7 +464,7 @@ export default function App() {
       {/* Top bar — overlays the video, auto-hides while playing */}
       <header class={topBarClass()}>
         <div
-          class="flex h-full items-center gap-2 border-b px-3 backdrop-blur-xl backdrop-saturate-150"
+          class="flex h-full items-center gap-2 border-b px-3"
           style={{
             "border-color": "var(--border)",
             background: "color-mix(in srgb, var(--bg) 38%, transparent)",
@@ -576,7 +581,7 @@ export default function App() {
 
         {/* Player bar — shared by video and audio */}
         <footer
-          class="flex h-25 shrink-0 flex-col border-t backdrop-blur-xl backdrop-saturate-150"
+          class="flex h-25 shrink-0 flex-col border-t"
           style={{
             "border-color": "var(--border)",
             background: "color-mix(in srgb, var(--bg) 38%, transparent)",
@@ -596,10 +601,27 @@ export default function App() {
                 class="seek w-full"
                 min="0"
                 max="1000"
-                value={dur() ? Math.round((pos() / dur()) * 1000) : 0}
-                onInput={(e) =>
-                  dur() && seekTo(Math.round((Number(e.currentTarget.value) / 1000) * dur()))
-                }
+                value={scrubbing() ? dragValue() : dur() ? Math.round((pos() / dur()) * 1000) : 0}
+                onPointerDown={() => setScrubbing(true)}
+                onInput={(e) => {
+                  const v = Number(e.currentTarget.value);
+                  setDragValue(v);
+                  // Throttle seek IPC during drag; the release handler
+                  // issues the final accurate seek.
+                  const now = Date.now();
+                  if (now - lastSeekAt > 150) {
+                    lastSeekAt = now;
+                    dur() && seekTo(Math.round((v / 1000) * dur()));
+                  }
+                }}
+                onPointerUp={() => {
+                  setScrubbing(false);
+                  dur() && seekTo(Math.round((dragValue() / 1000) * dur()));
+                }}
+                onChange={() => {
+                  setScrubbing(false);
+                  dur() && seekTo(Math.round((dragValue() / 1000) * dur()));
+                }}
                 disabled={!media()}
                 aria-label="Seek"
                 style={`--progress:${seekPct()}%;`}
