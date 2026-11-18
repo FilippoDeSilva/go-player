@@ -267,7 +267,9 @@ fn spawn_event_watcher(
 ) {
     std::thread::spawn(move || {
         let mut obs = Observed::default();
-        let mut last_emit = Instant::now() - STATE_EMIT_INTERVAL;
+        let mut last_emit = Instant::now()
+            .checked_sub(STATE_EMIT_INTERVAL)
+            .unwrap_or_else(Instant::now);
         // Set when something other than a position tick changed, or a
         // file-level event arrived — forces an immediate emit.
         let mut urgent = true;
@@ -279,7 +281,10 @@ fn spawn_event_watcher(
             let timeout = if urgent {
                 0.0
             } else {
-                (STATE_EMIT_INTERVAL - since_emit).as_secs_f64().max(0.001)
+                STATE_EMIT_INTERVAL
+                    .saturating_sub(since_emit)
+                    .as_secs_f64()
+                    .max(0.001)
             };
 
             let shutdown = match mpv.wait_event(timeout) {
