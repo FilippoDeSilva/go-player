@@ -136,6 +136,10 @@ build_libplacebo() {
     done
   fi
 
+  # Python >=3.14 compat: ElementTree() now requires an Element, not an
+  # ElementTree — pass the root element explicitly.
+  sed -i 's/VkXML(ET.parse(xmlfile))/VkXML(ET.parse(xmlfile).getroot())/'     "$src/src/vulkan/utils_gen.py"
+
   log "Building libplacebo $ver"
   MESON_ARGS=(
     --prefix="$PREFIX" --buildtype=release -Ddefault_library=shared
