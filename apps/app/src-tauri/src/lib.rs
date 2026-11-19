@@ -583,7 +583,7 @@ fn media_surface_show(state: State<AppState>) -> Result<(), String> {
         }
         #[cfg(target_os = "linux")]
         gtk_apply_visibility(&state);
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
