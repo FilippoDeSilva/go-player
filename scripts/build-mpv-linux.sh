@@ -145,7 +145,13 @@ build_libplacebo() {
   # backend needs 3rdparty/glad, so clone with submodules instead.
   if [ ! -d "$src/.git" ]; then
     rm -rf "$src"
-    git clone --depth 1 --branch "$ver" --recurse-submodules https://github.com/haasn/libplacebo "$src"
+    git -c http.version=HTTP/1.1 clone --depth 1 --branch "$ver"       https://github.com/haasn/libplacebo "$src"
+    # Submodules (glad, Vulkan-Headers, ...) are required; retry because
+    # github occasionally resets HTTP/2 streams mid-clone.
+    for _ in 1 2 3; do
+      git -C "$src" -c http.version=HTTP/1.1 submodule update --init --recursive --depth 1 && break
+      sleep 3
+    done
   fi
 
   log "Building libplacebo $ver"
