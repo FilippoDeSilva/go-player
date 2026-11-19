@@ -212,7 +212,7 @@ build_mpv() {
     # video outputs / contexts
     -Dx11=enabled -Dwayland=enabled -Dgl=enabled -Dgbm=disabled
     -Degl=enabled -Degl-x11=enabled -Degl-wayland=enabled -Degl-drm=disabled
-    -Ddrm=disabled -Ddmabuf-wayland=enabled -Dxv=disabled
+    -Ddrm=disabled -Ddmabuf-wayland=disabled -Dxv=disabled
     # hw decode: VA-API is the common denominator (Intel/AMD/NVIDIA-via-
     # nvidia-vaapi-driver). VDPAU is disabled: it would hard-require
     # libvdpau.so.1 which pure Intel/AMD systems do not ship.
