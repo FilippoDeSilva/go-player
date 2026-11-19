@@ -48,6 +48,7 @@ jobs:
             libxcb-shape0-dev libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev \
             libxcb-xkb-dev libxcb-xinerama0-dev libxcb-cursor-dev libxext-dev \
             libxfixes-dev libxrandr-dev libxrender-dev libxss-dev libxi-dev \
+            libxpresent-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev wayland-protocols \
             libegl-dev libgl-dev libgles-dev libgbm-dev libdrm-dev \
             libpulse-dev libasound2-dev libudev-dev libvulkan-dev \

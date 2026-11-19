@@ -26,11 +26,12 @@
 #   libxcb-shape0-dev libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev
 #   libxcb-xkb-dev libxcb-xinerama0-dev libxcb-cursor-dev libxext-dev
 #   libxfixes-dev libxrandr-dev libxrender-dev libxss-dev libxi-dev
+#   libxpresent-dev
 #   libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev wayland-protocols
 #   libegl-dev libgl-dev libgles-dev libgbm-dev libdrm-dev
 #   libpulse-dev libasound2-dev libudev-dev libvulkan-dev
 #   libfreetype-dev libfontconfig-dev libfribidi-dev libharfbuzz-dev
-#   libuchardet-dev zlib1g-dev libssl-dev
+#   libuchardet-dev zlib1g-dev libssl-dev patchelf
 #   (meson >= 1.3 is required by mpv; install via `pip install meson` if
 #    the distro package is too old)
 #
@@ -65,7 +66,7 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing tool: $1 (see header comment for required packages)"; }
-for t in curl tar meson ninja pkg-config gcc make; do need "$t"; done
+for t in curl tar meson ninja pkg-config gcc make patchelf; do need "$t"; done
 command -v yasm >/dev/null || command -v nasm >/dev/null || die "missing yasm/nasm"
 
 # Every produced library gets $ORIGIN rpath so the bundled set resolves
@@ -158,12 +159,13 @@ build_libplacebo() {
 
   # Python >=3.14 compat: ElementTree() now requires an Element, not an
   # ElementTree — pass the root element explicitly.
-  sed -i 's/VkXML(ET.parse(xmlfile))/VkXML(ET.parse(xmlfile).getroot())/'     "$src/src/vulkan/utils_gen.py"
+  perl -pi -e 's/VkXML\(ET\.parse\(xmlfile\)\)/VkXML(ET.parse(xmlfile).getroot())/' \
+    "$src/src/vulkan/utils_gen.py"
 
   log "Building libplacebo $ver"
   MESON_ARGS=(
     --prefix="$PREFIX" --buildtype=release -Ddefault_library=shared
-    -Dvulkan=enabled -Dopengl=enabled
+    -Dvulkan=disabled -Dopengl=enabled
     -Dglslang=disabled -Dshaderc=disabled
     -Dlcms=disabled -Dxxhash=disabled -Dunwind=disabled
     -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false
@@ -217,7 +219,7 @@ build_mpv() {
     # nvidia-vaapi-driver). VDPAU is disabled: it would hard-require
     # libvdpau.so.1 which pure Intel/AMD systems do not ship.
     -Dvaapi=enabled -Dvaapi-x11=enabled -Dvaapi-wayland=enabled \
-    -Dvdpau=disabled -Dvulkan=enabled
+    -Dvdpau=disabled -Dvulkan=disabled
     -Dtests=false -Dfuzzers=false -Dbuild-date=false
   )
   meson_build "$src"
@@ -227,11 +229,21 @@ build_mpv() {
 stage_bundle() {
   log "Staging shared libraries into $STAGE_DIR"
   mkdir -p "$STAGE_DIR"
-  # Strip real files, then copy preserving symlinks (libfoo.so -> libfoo.so.X).
-  find "$PREFIX/lib" -maxdepth 1 -type f -name '*.so*' \
+  # FFmpeg (autotools) installs into lib/, while meson projects land in
+  # lib/<multiarch>/ on Debian/Ubuntu — collect .so files from both.
+  # Strip real files first, then copy preserving symlinks
+  # (libfoo.so -> libfoo.so.X).
+  find "$PREFIX/lib" -type f -name '*.so*' \
     -exec strip --strip-unneeded {} + 2>/dev/null || true
-  # shellcheck disable=SC2086
-  cp -a "$PREFIX"/lib/*.so* "$STAGE_DIR"/
+  # shellcheck disable=SC2046
+  cp -a $(find "$PREFIX/lib" -name '*.so*' | sort -u) "$STAGE_DIR"/
+
+  # FFmpeg's configure does not propagate --extra-ldflags into shared
+  # library links, so its .so files carry no RUNPATH and could not find
+  # their siblings once relocated. Force $ORIGIN on everything staged —
+  # the meson-built libs already have it, so this is a no-op for them.
+  find "$STAGE_DIR" -maxdepth 1 -type f -name '*.so*' \
+    -exec patchelf --set-rpath '$ORIGIN' {} +
   # mpv client headers (useful for debugging / future bindgen)
   mkdir -p "$REPO_ROOT/native/mpv/$TARGET/include"
   cp -r "$PREFIX/include/mpv" "$REPO_ROOT/native/mpv/$TARGET/include/" 2>/dev/null || true

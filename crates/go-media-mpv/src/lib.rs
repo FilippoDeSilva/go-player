@@ -28,11 +28,16 @@ use go_media::{
     MediaBackend, MediaError, MediaInfo, MediaResult, PlaybackEngine, PlaybackState,
     PlaybackStatus, TrackKind,
 };
-use libmpv2::{Format, Mpv, events};
+pub mod render_gl;
+use libmpv2::{Format, events};
+pub use render_gl::{GlRenderContext, GlRenderParams};
+// Re-exported so hosts can hold the mpv handle (e.g. to create GL
+// render contexts without borrowing the whole engine).
+pub use libmpv2::Mpv;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -60,6 +65,9 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 /// callback.
 pub struct MpvPlaybackEngine {
     mpv: Arc<Mpv>,
+    /// Monotonic id distinguishing engine instances for render-context
+    /// invalidation on the host side.
+    instance_id: u64,
     current: Option<PathBuf>,
     /// Set by the event watcher when mpv reports FILE_LOADED.
     file_loaded: Arc<AtomicBool>,
@@ -100,6 +108,78 @@ impl MpvPlaybackEngine {
             init.set_property("force-window", "yes")?;
             Ok(())
         })
+    }
+
+    /// Create an engine with video output disabled but normal audio
+    /// routing. Used where no native video surface is available — e.g.
+    /// Linux Wayland sessions, where mpv cannot embed into the window,
+    /// or platforms still on the headless path.
+    pub fn with_audio_only() -> MediaResult<Self> {
+        Self::build(|init| {
+            init.set_property("vo", "null")?;
+            // NOTE: `ao` is deliberately left at its default (auto) so
+            // audio actually plays — unlike `new_headless`, which is
+            // for tests/probing only.
+            init.set_property("idle", "yes")?;
+            init.set_property("terminal", "no")?;
+            init.set_property("input-default-bindings", "no")?;
+            init.set_option("hwdec", "auto-safe")?;
+            Ok(())
+        })
+    }
+
+    /// Create an engine whose video is rendered through libmpv's
+    /// render API into a client-supplied GL context (see
+    /// [`GlRenderContext`]). Used where mpv cannot own a window —
+    /// e.g. GTK on Linux, where the webview draws into the toplevel
+    /// and a native child window would cover the whole UI.
+    pub fn with_gl_surface() -> MediaResult<Self> {
+        Self::build(|init| {
+            init.set_property("vo", "libmpv")?;
+            init.set_property("idle", "yes")?;
+            init.set_property("terminal", "no")?;
+            init.set_property("input-default-bindings", "no")?;
+            // GPU-first decode; the render API presents via the host GL.
+            init.set_option("hwdec", "auto-safe")?;
+            init.set_property("keep-open", "yes")?;
+            // mpv's render() blocks for frame pacing by default — that
+            // would stall the UI thread that owns the GL context.
+            init.set_option("video-timing-offset", "0")?;
+            Ok(())
+        })
+    }
+
+    /// Create the OpenGL render context for this engine. Must be called
+    /// with the target GL context current, on the thread that will do
+    /// all rendering (e.g. the GTK main thread inside a `GtkGLArea`
+    /// render callback).
+    pub fn create_gl_render_context<C: 'static>(
+        &self,
+        get_proc_address: fn(&C, &str) -> *mut std::ffi::c_void,
+        user: C,
+    ) -> MediaResult<GlRenderContext> {
+        GlRenderContext::create(
+            Arc::clone(&self.mpv),
+            GlRenderParams {
+                get_proc_address,
+                user,
+            },
+        )
+    }
+
+    /// Unique identity of this engine instance — used by the host to
+    /// detect engine replacement and recreate render contexts. A
+    /// counter (not a pointer) so a freed engine's address can never
+    /// alias a new one.
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
+
+    /// Shared handle to the underlying mpv instance, for hosts that
+    /// must create render contexts without holding the engine (the
+    /// engine mutex may be locked during `open`).
+    pub fn shared_mpv(&self) -> Arc<Mpv> {
+        Arc::clone(&self.mpv)
     }
 
     /// Register a callback that receives [`PlaybackState`] snapshots.
@@ -161,8 +241,10 @@ impl MpvPlaybackEngine {
             Arc::clone(&eof_cb),
         );
 
+        static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
         Ok(Self {
             mpv,
+            instance_id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
             current: None,
             file_loaded,
             state_cb,

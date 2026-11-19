@@ -1,5 +1,7 @@
 #[cfg(windows)]
 mod video_surface;
+#[cfg(target_os = "linux")]
+mod video_surface_gtk;
 
 use base64::Engine as _;
 use go_media::{MediaBackend, PlaybackEngine, PlaybackState};
@@ -7,6 +9,8 @@ use go_media_mpv::MpvPlaybackEngine;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{Emitter, Manager, State, Window};
 
@@ -16,12 +20,31 @@ struct AppState {
     #[cfg(windows)]
     video_hwnd: Mutex<Option<video_surface::VideoSurfaceHwnd>>,
     /// Whether mpv's window should be visible (video vs audio).
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     video_shown: Mutex<bool>,
     /// Forced hide independent of media kind — set during the EOF rewind
     /// so mpv's cleared (grey) frame never shows.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     surface_forced_hidden: Mutex<bool>,
+    /// GL surface widget handle (GtkGLArea below the webview).
+    #[cfg(target_os = "linux")]
+    gtk_surface: Mutex<Option<video_surface_gtk::SurfaceHandle>>,
+    /// Whether the current engine renders via the GL surface
+    /// (`vo=libmpv`) vs audio-only (`vo=null`). Engines are rebuilt
+    /// when the media kind changes.
+    #[cfg(target_os = "linux")]
+    engine_is_gl_surface: AtomicBool,
+    /// `instance_id` of the engine the live mpv render context belongs
+    /// to; `open_media` waits for this to match before `loadfile`
+    /// because vo=libmpv cannot initialize without a render context.
+    #[cfg(target_os = "linux")]
+    render_ctx_id: AtomicU64,
+    /// `(instance_id, mpv handle)` of the GL-capable engine, kept
+    /// separate from `engine` so the GTK render callback never has to
+    /// take the engine mutex (which `open_media` holds across the
+    /// render-context wait — taking it there would deadlock).
+    #[cfg(target_os = "linux")]
+    gl_engine: Mutex<Option<(u64, std::sync::Arc<go_media_mpv::Mpv>)>>,
 }
 
 #[derive(Serialize)]
@@ -110,7 +133,7 @@ fn load_subtitles(path: String) -> Result<SubtitleSummary, String> {
 
 /// Visibility the surface should have right now: shown for video unless
 /// an EOF rewind has force-hidden it.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn effective_surface_visible(state: &AppState) -> bool {
     let shown = state.video_shown.lock().map(|g| *g).unwrap_or(false);
     let forced = state
@@ -176,6 +199,57 @@ fn ensure_mpv_surface(app: &tauri::AppHandle) {
     });
 }
 
+/// Make sure the GtkGLArea video surface is installed below the
+/// webview. Idempotent; runs the widget surgery on the GTK main
+/// thread.
+#[cfg(target_os = "linux")]
+fn ensure_gtk_surface(app: &tauri::AppHandle, window: &Window) {
+    video_surface_gtk::install(app, window);
+}
+
+/// Push the current effective visibility to the GL surface.
+#[cfg(target_os = "linux")]
+fn gtk_apply_visibility(state: &AppState) {
+    let visible = effective_surface_visible(state);
+    if let Ok(g) = state.gtk_surface.lock()
+        && let Some(handle) = g.as_ref()
+    {
+        handle.set_visible(visible);
+    }
+}
+
+/// Block until the mpv render context for `engine_id` exists (or
+/// ~3s elapse). Forces the GL widget visible and requests a draw so
+/// the render callback can create the context. Returns false on
+/// timeout — caller should degrade to audio-only playback.
+#[cfg(target_os = "linux")]
+fn wait_for_gl_render_context(
+    state: &AppState,
+    engine_id: u64,
+    app: &tauri::AppHandle,
+    window: &Window,
+) -> bool {
+    if state.render_ctx_id.load(Ordering::Relaxed) == engine_id {
+        return true;
+    }
+    ensure_gtk_surface(app, window);
+    if let Ok(g) = state.gtk_surface.lock()
+        && let Some(handle) = g.as_ref()
+    {
+        handle.set_visible(true);
+        handle.request_draw();
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while state.render_ctx_id.load(Ordering::Relaxed) != engine_id {
+        if std::time::Instant::now() >= deadline {
+            eprintln!("[go-player] timed out waiting for gl render context");
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 /// Wire the engine's push callbacks to Tauri events. Called once, right
 /// after engine creation: `media://state` carries throttled playback
 /// snapshots (replacing frontend polling), `media://eof` fires the
@@ -189,13 +263,14 @@ fn wire_engine_callbacks(engine: &MpvPlaybackEngine, app: &tauri::AppHandle) {
 
     let app_eof = app.clone();
     engine.set_eof_callback(move || {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             let state = app_eof.state::<AppState>();
             if let Ok(mut g) = state.surface_forced_hidden.lock() {
                 *g = true;
             }
             // Apply effective visibility directly — no IPC roundtrip.
+            #[cfg(windows)]
             if let Ok(surface) = state.video_hwnd.lock()
                 && let Some(s) = *surface
             {
@@ -203,6 +278,8 @@ fn wire_engine_callbacks(engine: &MpvPlaybackEngine, app: &tauri::AppHandle) {
                     video_surface::set_visible(s, effective_surface_visible(&state));
                 }
             }
+            #[cfg(target_os = "linux")]
+            gtk_apply_visibility(&state);
         }
         let _ = app_eof.emit("media://eof", ());
     });
@@ -218,7 +295,15 @@ fn open_media(
     let src = PathBuf::from(&path);
     let mut guard = state.engine.lock().map_err(|e| e.to_string())?;
 
-    if guard.is_none() {
+    // On Linux the engine kind must match the media kind: video needs
+    // the GL render path, audio uses vo=null. Rebuild when it changes.
+    #[cfg(target_os = "linux")]
+    let needs_engine =
+        guard.is_none() || state.engine_is_gl_surface.load(Ordering::Relaxed) != has_video;
+    #[cfg(not(target_os = "linux"))]
+    let needs_engine = guard.is_none();
+
+    if needs_engine {
         #[cfg(windows)]
         {
             // Pass the main window HWND: mpv embeds by creating its own
@@ -235,12 +320,41 @@ fn open_media(
             wire_engine_callbacks(&engine, window.app_handle());
             *guard = Some(engine);
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            // GL render API path: vo=libmpv draws into a GtkGLArea
+            // placed below the webview — works on X11 and Wayland
+            // alike. Audio files use vo=null since no frames are
+            // produced anyway.
+            ensure_gtk_surface(window.app_handle(), &window);
+            let engine = if has_video {
+                MpvPlaybackEngine::with_gl_surface()
+            } else {
+                MpvPlaybackEngine::with_audio_only()
+            }
+            .map_err(|e| format!("mpv init failed: {e}"))?;
+            wire_engine_callbacks(&engine, window.app_handle());
+            if has_video {
+                let pair = (engine.instance_id(), engine.shared_mpv());
+                if let Ok(mut g) = state.gl_engine.lock() {
+                    *g = Some(pair);
+                }
+            } else if let Ok(mut g) = state.gl_engine.lock() {
+                *g = None;
+            }
+            *guard = Some(engine);
+            state
+                .engine_is_gl_surface
+                .store(has_video, Ordering::Relaxed);
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = &window;
             let _ = has_video;
-            let engine =
-                MpvPlaybackEngine::new_headless().map_err(|e| format!("mpv init failed: {e}"))?;
+            // macOS and other unixes: no native surface path yet —
+            // audio-only rather than fully headless (ao=null).
+            let engine = MpvPlaybackEngine::with_audio_only()
+                .map_err(|e| format!("mpv init failed: {e}"))?;
             wire_engine_callbacks(&engine, window.app_handle());
             *guard = Some(engine);
         }
@@ -268,14 +382,54 @@ fn open_media(
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(mut g) = state.video_shown.lock() {
+            *g = has_video;
+        }
+        if let Ok(mut g) = state.surface_forced_hidden.lock() {
+            *g = false;
+        }
+        gtk_apply_visibility(&state);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = has_video;
+
+    // vo=libmpv refuses to initialize its video output until a render
+    // context exists. The context is created inside the GLArea's
+    // render callback, so for video we must wait for one draw cycle
+    // before loadfile — otherwise mpv aborts playback immediately.
+    #[cfg(target_os = "linux")]
+    {
+        if has_video {
+            let engine_id = guard.as_ref().map(|e| e.instance_id());
+            let ready = engine_id
+                .map(|id| wait_for_gl_render_context(&state, id, window.app_handle(), &window))
+                .unwrap_or(false);
+            if !ready {
+                eprintln!("[go-player] gl render context unavailable — audio-only fallback");
+                let engine = MpvPlaybackEngine::with_audio_only()
+                    .map_err(|e| format!("mpv init failed: {e}"))?;
+                wire_engine_callbacks(&engine, window.app_handle());
+                *guard = Some(engine);
+                state.engine_is_gl_surface.store(false, Ordering::Relaxed);
+                if let Ok(mut g) = state.gl_engine.lock() {
+                    *g = None;
+                }
+            }
+        }
+    }
 
     let engine = guard.as_mut().unwrap();
     let info = engine
         .open(&src)
         .map_err(|e| format!("open failed for {}: {e}", src.display()))?;
     eprintln!("[go-player] opened {}", src.display());
+
+    // Re-assert surface visibility for the newly opened file — mpv may
+    // have recreated its child window during load.
+    #[cfg(target_os = "linux")]
+    gtk_apply_visibility(&state);
 
     // Cover art comes from the file's tags / sidecar image — not from
     // mpv's rendered window, so it works regardless of surface state.
@@ -335,7 +489,7 @@ fn media_pause(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 fn media_stop(state: State<AppState>) -> Result<(), String> {
     with_engine(&state, |e| e.stop())?;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         if let Ok(mut g) = state.video_shown.lock() {
             *g = false;
@@ -343,9 +497,12 @@ fn media_stop(state: State<AppState>) -> Result<(), String> {
         if let Ok(mut g) = state.surface_forced_hidden.lock() {
             *g = false;
         }
+        #[cfg(windows)]
         if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
             unsafe { video_surface::set_visible(surface, false) };
         }
+        #[cfg(target_os = "linux")]
+        gtk_apply_visibility(&state);
     }
     Ok(())
 }
@@ -383,7 +540,17 @@ fn surface_set_visible(state: &State<AppState>, visible: bool) -> Result<(), Str
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn surface_set_visible(state: &State<AppState>, visible: bool) -> Result<(), String> {
+    if let Ok(g) = state.gtk_surface.lock()
+        && let Some(ctl) = g.as_ref()
+    {
+        ctl.set_visible(visible);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn surface_set_visible(_state: &State<AppState>, _visible: bool) -> Result<(), String> {
     Ok(())
 }
@@ -391,7 +558,7 @@ fn surface_set_visible(_state: &State<AppState>, _visible: bool) -> Result<(), S
 /// Hide mpv's video surface (used at EOF while rewinding to frame 0).
 #[tauri::command]
 fn media_surface_hide(state: State<AppState>) -> Result<(), String> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     if let Ok(mut g) = state.surface_forced_hidden.lock() {
         *g = true;
     }
@@ -401,20 +568,28 @@ fn media_surface_hide(state: State<AppState>) -> Result<(), String> {
 /// Restore mpv's surface visibility per the current media kind.
 #[tauri::command]
 fn media_surface_show(state: State<AppState>) -> Result<(), String> {
-    #[cfg(not(windows))]
-    let _ = &state;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         if let Ok(mut g) = state.surface_forced_hidden.lock() {
             *g = false;
         }
-        if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
-            unsafe {
-                video_surface::set_visible(surface, effective_surface_visible(&state));
+        #[cfg(windows)]
+        {
+            if let Some(surface) = *state.video_hwnd.lock().map_err(|e| e.to_string())? {
+                unsafe {
+                    video_surface::set_visible(surface, effective_surface_visible(&state));
+                }
             }
         }
+        #[cfg(target_os = "linux")]
+        gtk_apply_visibility(&state);
+        return Ok(());
     }
-    Ok(())
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = &state;
+        Ok(())
+    }
 }
 
 fn reposition_video_surface(state: &AppState, window: &Window) {
@@ -433,6 +608,8 @@ fn reposition_video_surface(state: &AppState, window: &Window) {
             video_surface::bring_webview_to_top(parent);
         }
     }
+    // Linux needs no manual repositioning: the GtkGLArea is a normal
+    // widget and GTK resizes it with the window automatically.
     #[cfg(not(windows))]
     {
         let _ = (state, window);
@@ -445,6 +622,22 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            // Debug/dev hook: GO_PLAYER_OPEN=/path/to/file auto-opens
+            // media on startup (used for headless-ish playback checks).
+            if let Ok(path) = std::env::var("GO_PLAYER_OPEN") {
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    if let Some(webview) = app.get_webview_window("main") {
+                        let window = webview.as_ref().window();
+                        let state = app.state::<AppState>();
+                        let _ = open_media(window, state, path, true);
+                    }
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             media_backend,
             load_subtitles,

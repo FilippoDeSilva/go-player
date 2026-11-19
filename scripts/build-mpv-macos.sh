@@ -47,7 +47,9 @@ BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing tool: $1"; }
-for t in curl tar meson ninja pkg-config make; do need "$t"; done
+for t in curl tar meson ninja pkg-config make perl otool install_name_tool; do
+  need "$t"
+done
 [ "$(uname -s)" = "Darwin" ] || die "this script must run on macOS"
 
 # Bundled dylibs must find each other: @loader_path = the directory
@@ -114,7 +116,8 @@ build_ffmpeg() {
       --enable-encoder=png --enable-encoder=mjpeg \
       --enable-encoder=bmp --enable-encoder=ppm \
       --extra-cflags='-O2' \
-      --extra-ldflags="$ORIGIN_RPATH"
+      --install-name-dir=@rpath \
+      --extra-ldflags="$ORIGIN_RPATH -Wl,-headerpad_max_install_names"
     make -j "$JOBS"
     make install
   )
@@ -138,7 +141,8 @@ build_libplacebo() {
 
   # Python >=3.14 compat: ElementTree() now requires an Element, not an
   # ElementTree — pass the root element explicitly.
-  sed -i 's/VkXML(ET.parse(xmlfile))/VkXML(ET.parse(xmlfile).getroot())/'     "$src/src/vulkan/utils_gen.py"
+  perl -pi -e 's/VkXML\(ET\.parse\(xmlfile\)\)/VkXML(ET.parse(xmlfile).getroot())/' \
+    "$src/src/vulkan/utils_gen.py"
 
   log "Building libplacebo $ver"
   MESON_ARGS=(
@@ -161,6 +165,9 @@ build_libass() {
   log "Building libass $ver"
   MESON_ARGS=(
     --prefix="$PREFIX" --buildtype=release -Ddefault_library=shared
+    # CoreText is the system font provider on macOS — skipping fontconfig
+    # removes the expat/libxml2/fontconfig dependency closure entirely.
+    -Dfontconfig=disabled
   )
   meson_build "$src"
 }
@@ -186,28 +193,113 @@ build_mpv() {
     -Djack=disabled -Dopenal=disabled -Doss-audio=disabled -Dsndio=disabled \
     -Dcoreaudio=enabled
     # video: libmpv embeds via the render API / plain-gl; no X11/Wayland.
-    # VideoToolbox gives hardware decode; plain-gl + libplacebo's OpenGL
-    # backend is the gpu-next path used by macOS libmpv clients.
+    # VideoToolbox gives hardware decode through the OpenGL path
+    # (videotoolbox-gl requires gl-cocoa, so cocoa stays enabled — it is
+    # auto anyway on macOS). videotoolbox-pl is disabled: mpv requires
+    # the Vulkan context for it and we ship no Vulkan on macOS.
     -Dx11=disabled -Dwayland=disabled -Dgbm=disabled -Ddrm=disabled \
-    -Ddmabuf-wayland=disabled -Dxv=disabled -Dcocoa=disabled \
+    -Ddmabuf-wayland=disabled -Dxv=disabled \
     -Dvaapi=disabled -Dvdpau=disabled -Dvulkan=disabled \
-    -Dplain-gl=enabled -Dgl-cocoa=disabled \
-    -Dvideotoolbox-pl=enabled -Dvideotoolbox-gl=enabled \
+    -Dplain-gl=enabled \
+    -Dvideotoolbox-gl=enabled -Dvideotoolbox-pl=disabled \
     -Dtests=false -Dfuzzers=false -Dbuild-date=false
   )
   meson_build "$src"
 }
 
 # ------------------------------------------------------------- stage bundle
+#
+# macOS dylibs reference each other by install_name, and our meson/brew
+# dependencies record @rpath/<name> load commands. To make the staged
+# set self-contained we:
+#   1. copy every produced dylib (preserving symlinks),
+#   2. recursively copy non-Apple dylibs our libs link against out of the
+#      brew prefix (freetype, fontconfig, harfbuzz, uchardet, ...),
+#   3. rewrite every load command that points at a bundled dylib to
+#      @loader_path/<name> — @loader_path always resolves to the
+#      directory containing the loading image, i.e. the bundle's lib/,
+#      so no LC_RPATH entries are needed at all.
+
+# basename -> path index of every dylib under the brew prefix (including
+# keg-only opt/ dirs and symlinks; cp -L dereferences at copy time).
+# Tab-separated "name<TAB>path" lines — bash 3.2 has no assoc arrays.
+BREW_INDEX="$BUILD_ROOT/brew-dylibs.index"
+build_brew_index() {
+  {
+    find "$BREW_PREFIX/lib" -name '*.dylib' 2>/dev/null
+    find "$BREW_PREFIX/opt" -name '*.dylib' 2>/dev/null
+    find "$BREW_PREFIX/Cellar" -name '*.dylib' 2>/dev/null
+  } | while IFS= read -r p; do
+    printf '%s\t%s\n' "$(basename "$p")" "$p"
+  done | sort -u > "$BREW_INDEX"
+}
+
+brew_lookup() { # basename -> path (first match; lib/ searched first)
+  awk -F'\t' -v b="$1" '$1 == b { print $2; exit }' "$BREW_INDEX"
+}
+
+# otool -L dep list of a dylib, minus the LC_ID_DYLIB first line.
+dylib_deps() { otool -L "$1" | tail -n +2 | awk '{print $1}'; }
+
 stage_bundle() {
   log "Staging dylibs into $STAGE_DIR"
   mkdir -p "$STAGE_DIR"
   find "$PREFIX/lib" -maxdepth 1 -type f \( -name '*.dylib' -o -name '*.so' \) \
     -exec strip -x {} + 2>/dev/null || true
-  # shellcheck disable=SC2086
-  cp -a "$PREFIX"/lib/*.dylib "$STAGE_DIR"/ 2>/dev/null || true
+  # cp -Rp preserves symlinks (libfoo.dylib -> libfoo.2.dylib) — plain
+  # `cp -a` does not exist on macOS. -name '*.dylib' matches symlinks too.
+  # shellcheck disable=SC2046
+  cp -Rp $(find "$PREFIX/lib" -maxdepth 1 -name '*.dylib' | sort -u) "$STAGE_DIR"/
   mkdir -p "$REPO_ROOT/native/mpv/$TARGET/include"
   cp -r "$PREFIX/include/mpv" "$REPO_ROOT/native/mpv/$TARGET/include/" 2>/dev/null || true
+
+  build_brew_index
+
+  # Breadth-first copy of brew-provided dependencies.
+  local -a queue=()
+  while IFS= read -r f; do queue+=("$f"); done \
+    < <(find "$STAGE_DIR" -maxdepth 1 -type f -name '*.dylib' | sort)
+  local i=0 f dep b src
+  while [ "$i" -lt "${#queue[@]}" ]; do
+    f="${queue[$i]}"; i=$((i + 1))
+    while IFS= read -r dep; do
+      b="$(basename "$dep")"
+      # Already staged (under this or another name) or a system lib.
+      [ -e "$STAGE_DIR/$b" ] && continue
+      case "$dep" in
+        /usr/lib/*|/System/*|@loader_path/*|@executable_path/*) continue ;;
+      esac
+      src=""
+      if [ -f "$dep" ]; then src="$dep"; fi
+      if [ -z "$src" ]; then src="$(brew_lookup "$b")"; fi
+      [ -n "$src" ] && [ -f "$src" ] || continue
+      cp -L "$src" "$STAGE_DIR/$b"
+      queue+=("$STAGE_DIR/$b")
+    done < <(dylib_deps "$f")
+  done
+
+  # Rewrite load commands that reference a bundled dylib to
+  # @loader_path/<name>. Best-effort: install_name_tool needs header
+  # padding, which our own builds have; third-party libs without it are
+  # left untouched (they keep working if they already carry a usable
+  # rpath, e.g. @loader_path from brew).
+  local changed=0 failed=0 f dep b deps
+  while IFS= read -r f; do
+    deps="$(dylib_deps "$f")"
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      b="$(basename "$dep")"
+      [ -e "$STAGE_DIR/$b" ] || continue
+      [ "$dep" = "@loader_path/$b" ] && continue
+      if install_name_tool -change "$dep" "@loader_path/$b" "$f" 2>/dev/null; then
+        changed=$((changed + 1))
+      else
+        failed=$((failed + 1))
+      fi
+    done <<< "$deps"
+  done < <(find "$STAGE_DIR" -maxdepth 1 -type f -name '*.dylib' | sort)
+  [ "$failed" -gt 0 ] && \
+    echo "warning: $failed load commands could not be rewritten (missing headerpad)" >&2
 
   echo
   log "Produced runtime ($TARGET):"
@@ -220,7 +312,7 @@ main() {
 
   if [ "${1:-}" != "--skip-build" ]; then
     brew install meson ninja nasm pkg-config \
-      freetype fontconfig fribidi harfbuzz uchardet
+      freetype fribidi harfbuzz uchardet
     [ "${SKIP_FFMPEG:-}" = "1" ] || build_ffmpeg
     build_libplacebo
     build_libass

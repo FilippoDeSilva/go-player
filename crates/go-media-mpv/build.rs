@@ -76,24 +76,40 @@ fn provision_windows(lib_dir: &Path, repo_root: &Path) {
 fn provision_unix(lib_parent: &Path, _repo_root: &Path, target: &str) {
     let lib_dir = lib_parent.join("lib");
     // Accept both plain and versioned sonames (our own build may produce
-    // e.g. libmpv.2.dylib on macOS or libmpv.so.2 on Linux).
+    // e.g. libmpv.2.dylib on macOS or libmpv.so.2 on Linux). Meson
+    // installs into lib/<multiarch>/ on Debian/Ubuntu while FFmpeg's
+    // autotools build installs into lib/ — search both.
     let candidates: &[&str] = if target.contains("linux") {
         &["libmpv.so", "libmpv.so.2", "libmpv.so.1"]
     } else {
         &["libmpv.dylib", "libmpv.2.dylib"]
     };
-    let Some(lib) = candidates
-        .iter()
-        .map(|c| lib_dir.join(c))
-        .find(|p| p.exists())
-    else {
+
+    let mut search_dirs = vec![lib_dir.clone()];
+    if let Ok(entries) = fs::read_dir(&lib_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                search_dirs.push(path);
+            }
+        }
+    }
+
+    let Some(found) = search_dirs.iter().find_map(|dir| {
+        candidates
+            .iter()
+            .map(|c| dir.join(c))
+            .find(|p| p.exists())
+            .map(|lib| (dir.clone(), lib))
+    }) else {
         println!(
             "cargo:warning=libmpv not provisioned at {} — run the platform build script",
             lib_dir.display()
         );
         return;
     };
+    let (link_dir, lib) = found;
 
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    println!("cargo:rustc-link-search=native={}", link_dir.display());
     println!("cargo:rerun-if-changed={}", lib.display());
 }

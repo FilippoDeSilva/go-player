@@ -29,6 +29,10 @@ go-media-mpv = { path = "../../../crates/go-media-mpv" }
 go-subtitles = { path = "../../../crates/go-subtitles" }
 go-tags = { path = "../../../crates/go-tags" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+libloading = "0.8"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",

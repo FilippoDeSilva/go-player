@@ -133,3 +133,61 @@ release builder.
   already accepts `libmpv.so`, `.so.1`, `.so.2`.
 - If `meson install` for mpv produces `libmpv.dylib`-style naming issues
   — not applicable on Linux.
+
+---
+
+## Update: Linux video surface — implemented and verified
+
+The X11 `wid` child-window approach was abandoned (the Tauri/Wry webview
+draws into the toplevel window; an mpv child would cover the whole UI
+and eat input). The shipped implementation is **GTK-native compositing**,
+desktop-environment agnostic (works on X11 and Wayland, GNOME/KDE/etc.):
+
+- `apps/app/src-tauri/src/video_surface_gtk.rs` — reparents the
+  webview's GTK container into a `GtkOverlay` with a `GtkGLArea` as the
+  base child. mpv renders through its **render API** (`vo=libmpv`) into
+  the GL area's bound framebuffer; DOM UI composites on top, so controls
+  stay interactive. No decoded frames cross IPC.
+- `crates/go-media-mpv/src/render_gl.rs` — owned wrapper around
+  `mpv_render_context` (OpenGL backend): create/update-callback/render/
+  report-swap/free. Holds an `Arc<Mpv>` so the context can never
+  outlive its mpv handle during engine replacement.
+- `MpvPlaybackEngine::with_gl_surface()` — `vo=libmpv` path;
+  `with_video_surface(wid)` remains the Windows path; audio files use
+  `with_audio_only` (`vo=null`).
+
+### Ordering invariant (important)
+
+`vo=libmpv` **cannot initialize its video output until a render context
+exists** — `loadfile` before the first GL draw makes mpv abort playback
+("Error opening/initializing the selected video_out"). `open_media`
+therefore: creates/stores the engine → publishes `(instance_id, Arc<Mpv>)`
+to `AppState::gl_engine` (a dedicated slot so the GTK render callback
+never takes the engine mutex, which `open_media` holds across the wait)
+→ waits (≤3 s) for `render_ctx_id` to match → then `engine.open()`.
+On timeout it degrades to `with_audio_only` so playback still works.
+
+### Frame pacing invariant
+
+mpv's `render()` clears the surface to black when called without a fresh
+frame. The render callback therefore only calls `render()` when mpv's
+update callback set a pending flag (or the widget resized); other GTK
+draws leave the FBO's last content in place.
+
+### Verified locally (X11, debug build)
+
+- App launches, installs the overlay, creates the render context before
+  `loadfile`, plays a test AVI end-to-end (frames advance, hits EOF,
+  `keep-open` holds the last frame).
+- `cargo check -p go-player` clean; `cargo test --workspace` passes.
+- Local run needs the sysroot env: `PKG_CONFIG_SYSROOT_DIR=$HOME/sysroot`,
+  `PKG_CONFIG_PATH=$HOME/sysroot/usr/lib/x86_64-linux-gnu/pkgconfig`,
+  plus `LD_LIBRARY_PATH` pointing at `native/mpv/<triple>/lib*`.
+
+### Still open
+
+- macOS still uses `with_audio_only` — a native surface (e.g. mpv
+  render API into an `NSOpenGLView`/Metal layer, or `wid`-equivalent)
+  is not yet implemented.
+- Rust toolchain here lacks `rustfmt`/`clippy`; formatting was kept
+  consistent manually.
