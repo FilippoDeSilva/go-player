@@ -54,7 +54,7 @@ for t in curl tar meson ninja pkg-config make; do need "$t"; done
 # containing the loading image (works for both the exe and sibling dylibs).
 ORIGIN_RPATH='-Wl,-rpath,@loader_path'
 export LDFLAGS="${LDFLAGS:-} $ORIGIN_RPATH"
-export PKG_CONFIG_PATH="$BREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export PKG_CONFIG_PATH="$BREW_PREFIX/lib/pkgconfig:$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 fetch() { # url dest — retries until the archive passes a tar listing check
   local url="$1" dest="$2" attempt
