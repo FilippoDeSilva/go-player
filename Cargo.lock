@@ -1411,6 +1411,7 @@ name = "go-media-mpv"
 version = "0.1.0"
 dependencies = [
  "go-media",
+ "libc",
  "libmpv2",
  "libmpv2-sys",
  "thiserror 2.0.21",

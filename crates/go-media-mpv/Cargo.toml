@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 go-media = { path = "../go-media" }
+libc = "0.2"
 libmpv2 = "7"
 libmpv2-sys = "4"
 thiserror = "2"

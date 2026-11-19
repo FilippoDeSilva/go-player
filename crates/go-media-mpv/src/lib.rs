@@ -217,6 +217,18 @@ impl MpvPlaybackEngine {
     where
         F: FnOnce(libmpv2::MpvInitializer) -> libmpv2::Result<()>,
     {
+        // libplacebo (inside libmpv) refuses to initialize unless
+        // LC_NUMERIC is "C" — it prints "Non-C locale detected" and
+        // mpv init fails. GTK/toolkits call setlocale(LC_ALL, "")
+        // during init, so pin the numeric category here, immediately
+        // before mpv_create, regardless of the ambient locale.
+        // Safety: setlocale is async-signal-safe to call this early,
+        // before mpv's threads exist.
+        #[cfg(unix)]
+        unsafe {
+            libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr());
+        }
+
         let mpv = Mpv::with_initializer(configure).map_err(engine_err)?;
         let mpv = Arc::new(mpv);
 

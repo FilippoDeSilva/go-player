@@ -172,7 +172,9 @@ impl GlRenderContext {
             fbo,
             w: width,
             h: height,
-            internal_format: 0,
+            // The host surface (GtkGLArea) is RGBA8; state the real
+            // internal format instead of letting mpv guess.
+            internal_format: 0x8058, // GL_RGBA8
         });
         let flip_param = Box::new(flip as i32);
         let raw_params = [
