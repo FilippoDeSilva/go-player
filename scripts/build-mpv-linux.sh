@@ -210,7 +210,7 @@ build_mpv() {
     -Dalsa=enabled -Dpulse=enabled -Dpipewire=disabled
     -Djack=disabled -Dopenal=disabled -Doss-audio=disabled -Dsndio=disabled
     # video outputs / contexts
-    -Dx11=enabled -Dwayland=enabled -Dgl=enabled -Dgbm=enabled
+    -Dx11=enabled -Dwayland=enabled -Dgl=enabled -Dgbm=disabled
     -Degl=enabled -Degl-x11=enabled -Degl-wayland=enabled -Degl-drm=disabled
     -Ddrm=disabled -Ddmabuf-wayland=enabled -Dxv=disabled
     # hw decode: VA-API is the common denominator (Intel/AMD/NVIDIA-via-
