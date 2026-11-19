@@ -158,7 +158,7 @@ impl GlRenderContext {
             );
         }
         self.update_cleanup = Some(Box::new(move || unsafe {
-            drop(Box::from_raw(raw as *mut Box<dyn Fn() + Send>));
+            drop(Box::from_raw(raw));
         }));
     }
 

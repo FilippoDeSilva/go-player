@@ -23,6 +23,17 @@ Thumbs.db
 # Provisioned native binaries (downloaded by scripts/setup-mpv.ps1)
 native/mpv/
 
-# Staged native runtime for bundling (produced by scripts/setup-mpv.*)
-apps/app/src-tauri/bundle-resources/
+# Staged native runtime for bundling (produced by scripts/setup-mpv.*).
+# Keep the platform dirs themselves tracked (via .gitkeep) so tauri-build
+# finds the resource paths on fresh clones and in CI before provisioning.
+apps/app/src-tauri/bundle-resources/*
+!apps/app/src-tauri/bundle-resources/linux
+!apps/app/src-tauri/bundle-resources/macos
+!apps/app/src-tauri/bundle-resources/windows
+apps/app/src-tauri/bundle-resources/linux/*
+!apps/app/src-tauri/bundle-resources/linux/.gitkeep
+apps/app/src-tauri/bundle-resources/macos/*
+!apps/app/src-tauri/bundle-resources/macos/.gitkeep
+apps/app/src-tauri/bundle-resources/windows/*
+!apps/app/src-tauri/bundle-resources/windows/.gitkeep
 .mpv-build/
