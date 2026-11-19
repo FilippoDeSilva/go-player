@@ -72,7 +72,9 @@ command -v yasm >/dev/null || command -v nasm >/dev/null || die "missing yasm/na
 # internally no matter where the installer puts it.
 ORIGIN_RPATH='-Wl,-rpath,$ORIGIN'
 export LDFLAGS="${LDFLAGS:-} $ORIGIN_RPATH"
-export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+# meson may install .pc files under the Debian multiarch dir
+MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${MULTIARCH:+:$PREFIX/lib/$MULTIARCH/pkgconfig}:${PKG_CONFIG_PATH:-}"
 
 fetch() { # url dest — retries until the archive passes a tar listing check
   local url="$1" dest="$2" attempt
