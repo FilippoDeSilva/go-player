@@ -53,7 +53,7 @@ jobs:
             libegl-dev libgl-dev libgles-dev libgbm-dev libdrm-dev \
             libpulse-dev libasound2-dev libudev-dev libvulkan-dev \
             libfreetype-dev libfontconfig-dev libfribidi-dev libharfbuzz-dev \
-            libuchardet-dev zlib1g-dev libssl-dev
+            libuchardet-dev zlib1g-dev libssl-dev libexpat-dev
           # mpv 0.40 requires meson >= 1.3; the distro package is too old.
           python3 -m pip install --user --upgrade meson
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

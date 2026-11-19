@@ -31,7 +31,7 @@
 #   libegl-dev libgl-dev libgles-dev libgbm-dev libdrm-dev
 #   libpulse-dev libasound2-dev libudev-dev libvulkan-dev
 #   libfreetype-dev libfontconfig-dev libfribidi-dev libharfbuzz-dev
-#   libuchardet-dev zlib1g-dev libssl-dev patchelf
+#   libuchardet-dev zlib1g-dev libssl-dev libexpat-dev patchelf
 #   (meson >= 1.3 is required by mpv; install via `pip install meson` if
 #    the distro package is too old)
 #
@@ -42,6 +42,10 @@ set -euo pipefail
 FFMPEG_VER="${FFMPEG_VER:-7.1.1}"
 LIBPLACEBO_VER="${LIBPLACEBO_VER:-v7.349.0}"
 LIBASS_VER="${LIBASS_VER:-0.17.4}"
+# mpv requires wayland-client/cursor >= 1.21 but ubuntu-22.04 ships 1.20,
+# so wayland is built from source like the other bundled deps.
+WAYLAND_VER="${WAYLAND_VER:-1.23.1}"
+WAYLAND_PROTOCOLS_VER="${WAYLAND_PROTOCOLS_VER:-1.41}"
 MPV_VER="${MPV_VER:-v0.40.0}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -76,6 +80,9 @@ export LDFLAGS="${LDFLAGS:-} $ORIGIN_RPATH"
 # meson may install .pc files under the Debian multiarch dir
 MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${MULTIARCH:+:$PREFIX/lib/$MULTIARCH/pkgconfig}:${PKG_CONFIG_PATH:-}"
+# wayland-scanner (built from source below) must be on PATH for mpv's
+# meson configure.
+export PATH="$PREFIX/bin:$PATH"
 
 fetch() { # url dest — retries until the archive passes a tar listing check
   local url="$1" dest="$2" attempt
@@ -187,6 +194,34 @@ build_libass() {
   meson_build "$src"
 }
 
+# ------------------------------------------------------ wayland + protocols
+build_wayland() {
+  local ver="$WAYLAND_VER" src="$BUILD_ROOT/wayland-$WAYLAND_VER"
+  fetch "https://github.com/wayland-mirror/wayland/archive/refs/tags/$ver.tar.gz" \
+        "$BUILD_ROOT/wayland-$ver.tar.gz"
+  [ -d "$src" ] || { mkdir -p "$src"; extract "$BUILD_ROOT/wayland-$ver.tar.gz" "$src"; }
+
+  log "Building wayland $ver (wayland-client/cursor/scanner)"
+  MESON_ARGS=(
+    --prefix="$PREFIX" --buildtype=release -Ddefault_library=shared
+    -Dtests=false -Ddocumentation=false
+  )
+  meson_build "$src"
+}
+
+build_wayland_protocols() {
+  local ver="$WAYLAND_PROTOCOLS_VER" src="$BUILD_ROOT/wayland-protocols-$ver"
+  fetch "https://github.com/wayland-mirror/wayland-protocols/archive/refs/tags/$ver.tar.gz" \
+        "$BUILD_ROOT/wayland-protocols-$ver.tar.gz"
+  [ -d "$src" ] || { mkdir -p "$src"; extract "$BUILD_ROOT/wayland-protocols-$ver.tar.gz" "$src"; }
+
+  log "Building wayland-protocols $ver"
+  MESON_ARGS=(
+    --prefix="$PREFIX" --buildtype=release -Ddefault_library=shared
+  )
+  meson_build "$src"
+}
+
 # --------------------------------------------------------------------- mpv
 build_mpv() {
   local ver="$MPV_VER" src="$BUILD_ROOT/mpv-$MPV_VER"
@@ -262,6 +297,8 @@ main() {
     [ "${SKIP_FFMPEG:-}" = "1" ] || build_ffmpeg
     build_libplacebo
     build_libass
+    build_wayland_protocols
+    build_wayland
     build_mpv
   fi
 
