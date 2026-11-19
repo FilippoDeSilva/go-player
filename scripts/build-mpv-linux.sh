@@ -79,7 +79,7 @@ ORIGIN_RPATH='-Wl,-rpath,$ORIGIN'
 export LDFLAGS="${LDFLAGS:-} $ORIGIN_RPATH"
 # meson may install .pc files under the Debian multiarch dir
 MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
-export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${MULTIARCH:+:$PREFIX/lib/$MULTIARCH/pkgconfig}:${PKG_CONFIG_PATH:-}"
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${MULTIARCH:+:$PREFIX/lib/$MULTIARCH/pkgconfig}:$PREFIX/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 # wayland-scanner (built from source below) must be on PATH for mpv's
 # meson configure.
 export PATH="$PREFIX/bin:$PATH"
