@@ -210,7 +210,7 @@ build_wayland() {
 }
 
 build_wayland_protocols() {
-  local ver="$WAYLAND_PROTOCOLS_VER" src="$BUILD_ROOT/wayland-protocols-$ver"
+  local ver="$WAYLAND_PROTOCOLS_VER" src="$BUILD_ROOT/wayland-protocols-$WAYLAND_PROTOCOLS_VER"
   fetch "https://github.com/wayland-mirror/wayland-protocols/archive/refs/tags/$ver.tar.gz" \
         "$BUILD_ROOT/wayland-protocols-$ver.tar.gz"
   [ -d "$src" ] || { mkdir -p "$src"; extract "$BUILD_ROOT/wayland-protocols-$ver.tar.gz" "$src"; }
