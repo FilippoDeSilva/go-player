@@ -297,8 +297,10 @@ main() {
     [ "${SKIP_FFMPEG:-}" = "1" ] || build_ffmpeg
     build_libplacebo
     build_libass
-    build_wayland_protocols
+    # wayland first: it provides wayland-scanner, which
+    # wayland-protocols' meson build requires (>= the wayland version).
     build_wayland
+    build_wayland_protocols
     build_mpv
   fi
 
