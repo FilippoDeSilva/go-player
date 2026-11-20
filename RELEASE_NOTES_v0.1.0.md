@@ -2,9 +2,15 @@
 
 Initial release with cross-platform desktop playback.
 
+![Go Player Video Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/video-playback.png)
+
 ## What's New
 
 ### Playback
+
+![Go Player Music Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/music-playback.png)
+
+![Go Player Video with Subtitles](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/video-subtitles.png)
 
 - **Video**: H.264, VP9, AV1, and other common codecs via libmpv
 - **Audio**: MP3, FLAC, WAV, OGG, M4A, AAC, WMA, Opus, AIFF

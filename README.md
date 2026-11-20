@@ -6,6 +6,8 @@ generate subtitles from speech on-device, translate subtitle tracks
 locally or via explicit cloud providers, and edit/synchronize/export
 them — all offline-first once models are installed.
 
+![Go Player Video Playback](docs/screenshots/video-playback.png)
+
 Playback comes first: the player must be excellent even when AI
 features are unavailable.
 
