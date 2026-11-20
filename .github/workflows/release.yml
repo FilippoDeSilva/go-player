@@ -148,19 +148,30 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Cache libmpv build
+        id: cache-libmpv
+        uses: actions/cache@v4
+        with:
+          path: |
+            native/mpv/
+            apps/app/src-tauri/bundle-resources/
+          key: libmpv-${{ runner.os }}-${{ hashFiles('scripts/build-mpv-*.sh', 'scripts/setup-mpv.ps1') }}
+          restore-keys: |
+            libmpv-${{ runner.os }}-
+
       - name: Provision libmpv (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.cache-libmpv.outputs.cache-hit != 'true'
         shell: pwsh
         env:
           PAT: ${{ secrets.PAT }}
         run: ./scripts/setup-mpv.ps1 -Version v0.42.0
 
       - name: Build self-contained libmpv (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && steps.cache-libmpv.outputs.cache-hit != 'true'
         run: ./scripts/build-mpv-linux.sh
 
       - name: Build self-contained libmpv (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.cache-libmpv.outputs.cache-hit != 'true'
         run: ./scripts/build-mpv-macos.sh
 
       - name: Write release notes
