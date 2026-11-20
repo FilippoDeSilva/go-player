@@ -155,7 +155,7 @@ jobs:
           path: |
             native/mpv/
             apps/app/src-tauri/bundle-resources/
-          key: libmpv-${{ runner.os }}-${{ hashFiles('scripts/build-mpv-*.sh', 'scripts/setup-mpv.ps1') }}
+          key: libmpv-${{ runner.os }}
           restore-keys: |
             libmpv-${{ runner.os }}-
 
@@ -179,7 +179,9 @@ jobs:
         env:
           RELEASE_NOTES: ${{ needs.create-tag.outputs.release_notes }}
         run: |
-          printf '%s' "$RELEASE_NOTES" > release_notes.md
+          echo "$RELEASE_NOTES" > release_notes.md
+          echo "=== Release notes preview ==="
+          head -20 release_notes.md
 
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0

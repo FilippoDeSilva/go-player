@@ -69,7 +69,7 @@ jobs:
           path: |
             native/mpv/
             apps/app/src-tauri/bundle-resources/
-          key: libmpv-${{ runner.os }}-${{ hashFiles('scripts/build-mpv-*.sh', 'scripts/setup-mpv.ps1') }}
+          key: libmpv-${{ runner.os }}
           restore-keys: |
             libmpv-${{ runner.os }}-
 
