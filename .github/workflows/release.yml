@@ -176,7 +176,7 @@ jobs:
           tagName: v${{ needs.check-version.outputs.version }}
           releaseName: v${{ needs.check-version.outputs.version }}
           releaseBodyPath: ./release_notes.md
-          releaseCommitish: v${{ needs.check-version.outputs.version }}
+          releaseCommitish: ${{ github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
           # Optional updater signing — set these repo secrets to enable
