@@ -45,9 +45,27 @@ jobs:
             echo "No new version (version matches latest tag)"
           fi
 
+  create-tag:
+    name: Create release tag
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Go Player - Release v${VERSION}"
+          git push origin "v${VERSION}"
+
   build:
     name: Build (${{ matrix.os }})
-    needs: check-version
+    needs: [check-version, create-tag]
     if: needs.check-version.outputs.should_release == 'true'
     strategy:
       fail-fast: false
@@ -59,6 +77,8 @@ jobs:
       DYLD_FALLBACK_LIBRARY_PATH: /opt/homebrew/lib
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.check-version.outputs.version }}
 
       - uses: pnpm/action-setup@v4
 
@@ -135,22 +155,13 @@ jobs:
           done
           cat release_notes.md
 
-      - name: Create tag
-        shell: bash
-        run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Go Player - Release v${VERSION}"
-          git push origin "v${VERSION}"
-
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
         with:
           tagName: v${{ needs.check-version.outputs.version }}
           releaseName: v${{ needs.check-version.outputs.version }}
           releaseBodyPath: ./release_notes.md
-          releaseCommitish: ${{ github.sha }}
+          releaseCommitish: v${{ needs.check-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
           # Optional updater signing — set these repo secrets to enable
