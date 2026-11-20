@@ -6,9 +6,13 @@ generate subtitles from speech on-device, translate subtitle tracks
 locally or via explicit cloud providers, and edit/synchronize/export
 them — all offline-first once models are installed.
 
-![Go Player Video Playback](docs/screenshots/video-playback.png)
-![Go Player Video with Subtitles](docs/screenshots/video-subtitles.png)
-![Go Player Music Playback](docs/screenshots/music-playback.png)
+<table>
+  <tr>
+    <td><img src="docs/screenshots/video-playback.png" alt="Video Playback" width="300" /></td>
+    <td><img src="docs/screenshots/video-subtitles.png" alt="Video with Subtitles" width="300" /></td>
+    <td><img src="docs/screenshots/music-playback.png" alt="Music Playback" width="300" /></td>
+  </tr>
+</table>
 
 ## Tech stack
 
