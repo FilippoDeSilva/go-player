@@ -79,12 +79,28 @@ jobs:
         if: runner.os == 'macOS'
         run: ./scripts/build-mpv-macos.sh
 
+      - name: Extract release notes from CHANGELOG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            /^## \[/ { in_section = ($0 ~ "\\[" ver "\\]") }
+            in_section { print }
+          ' CHANGELOG.md > release_notes.md
+          # Add screenshots at the top
+          echo "![Go Player Video Playback](https://raw.githubusercontent.com/${{ github.repository }}/${GITHUB_REF_NAME}/docs/screenshots/video-playback.png)" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "![Go Player Music Playback](https://raw.githubusercontent.com/${{ github.repository }}/${GITHUB_REF_NAME}/docs/screenshots/music-playback.png)" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "![Go Player Video with Subtitles](https://raw.githubusercontent.com/${{ github.repository }}/${GITHUB_REF_NAME}/docs/screenshots/video-subtitles.png)" >> release_notes.md
+          echo "" >> release_notes.md
+          cat release_notes.md
+
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
-          releaseBodyPath: ./RELEASE_NOTES_${{ github.ref_name }}.md
+          releaseBodyPath: ./release_notes.md
           releaseCommitish: ${{ github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
