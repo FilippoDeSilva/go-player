@@ -179,7 +179,9 @@ jobs:
         env:
           RELEASE_NOTES: ${{ needs.create-tag.outputs.release_notes }}
         run: |
-          printf '%s' "$RELEASE_NOTES" > release_notes.md
+          echo "$RELEASE_NOTES" > release_notes.md
+          echo "=== Release notes written ==="
+          cat release_notes.md
 
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
