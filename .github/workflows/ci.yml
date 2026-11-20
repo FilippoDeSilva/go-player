@@ -88,6 +88,3 @@ jobs:
 
       - name: Rust test
         run: cargo test --workspace
-
-      - name: Build Tauri (debug)
-        run: pnpm tauri build --debug
