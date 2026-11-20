@@ -16,12 +16,13 @@ fn main() {
     // Only unpackaged dev builds need this — release artifacts resolve
     // bundled libs via the `$ORIGIN` RUNPATH and shouldn't carry a
     // build-machine absolute path.
-    if env::var("PROFILE").as_deref() != Ok("release")
-        && (target.contains("linux") || target.contains("apple"))
-    {
+    // Skip macOS for now — it uses @rpath/@loader_path and has different
+    // library loading semantics. Will add proper macOS rpath handling later.
+    if env::var("PROFILE").as_deref() != Ok("release") && target.contains("linux") {
         let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         let repo_root = manifest_dir.join("../..").canonicalize().unwrap();
         let lib_dir = repo_root.join("native/mpv").join(&target).join("lib");
+        // Only add rpath if the directory exists
         if lib_dir.is_dir() {
             let mut dirs = vec![lib_dir.clone()];
             if let Ok(entries) = std::fs::read_dir(&lib_dir) {
