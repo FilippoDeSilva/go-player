@@ -8,10 +8,6 @@ Initial release with cross-platform desktop playback.
 
 ### Playback
 
-![Go Player Music Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/music-playback.png)
-
-![Go Player Video with Subtitles](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/video-subtitles.png)
-
 - **Video**: H.264, VP9, AV1, and other common codecs via libmpv
 - **Audio**: MP3, FLAC, WAV, OGG, M4A, AAC, WMA, Opus, AIFF
 - **Subtitles**: SRT, WebVTT, ASS/SSA with external file loading
@@ -27,6 +23,10 @@ Initial release with cross-platform desktop playback.
 | macOS    | ⚠️ Audio-only | DMG (video surface pending)                  |
 
 ### UI/UX
+
+![Go Player Music Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/music-playback.png)
+
+![Go Player Video with Subtitles](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/video-subtitles.png)
 
 - Modern dark-first design (Midnight / OLED / Light themes)
 - Auto-hiding controls (3s idle)
