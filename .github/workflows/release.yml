@@ -1,16 +1,54 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  check-version:
+    name: Check for new version
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if version changed since last tag
+        id: check
+        run: |
+          # Get version from Cargo.toml
+          VERSION=$(grep '^version' apps/app/src-tauri/Cargo.toml | head -1 | cut -d'"' -f2)
+
+          # Get latest tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          LATEST_VERSION=${LATEST_TAG#v}
+
+          echo "Current version: $VERSION"
+          echo "Latest tag: $LATEST_TAG ($LATEST_VERSION)"
+
+          if [ "$VERSION" != "$LATEST_VERSION" ]; then
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "New version detected: $VERSION (latest tag: $LATEST_VERSION)"
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "No new version (version matches latest tag)"
+          fi
+
   build:
     name: Build (${{ matrix.os }})
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +92,6 @@ jobs:
             libpulse-dev libasound2-dev libudev-dev libvulkan-dev \
             libfreetype-dev libfontconfig-dev libfribidi-dev libharfbuzz-dev \
             libuchardet-dev zlib1g-dev libssl-dev libexpat-dev
-          # mpv 0.40 requires meson >= 1.3; the distro package is too old.
           python3 -m pip install --user --upgrade meson
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
@@ -82,7 +119,7 @@ jobs:
       - name: Extract release notes from CHANGELOG
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.check-version.outputs.version }}"
           awk -v ver="$VERSION" '
             /^## \[/ { in_section = ($0 ~ "\\[" ver "\\]") }
             in_section { print }
@@ -93,16 +130,25 @@ jobs:
           for img in docs/screenshots/*.{png,jpg,jpeg,webp,gif}; do
             filename=$(basename "$img")
             name="${filename%.*}"
-            echo "![${name}](https://raw.githubusercontent.com/${{ github.repository }}/${GITHUB_REF_NAME}/docs/screenshots/${filename})" >> release_notes.md
+            echo "![${name}](https://raw.githubusercontent.com/${{ github.repository }}/v${VERSION}/docs/screenshots/${filename})" >> release_notes.md
             echo "" >> release_notes.md
           done
           cat release_notes.md
 
+      - name: Create tag
+        shell: bash
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
+          tagName: v${{ needs.check-version.outputs.version }}
+          releaseName: v${{ needs.check-version.outputs.version }}
           releaseBodyPath: ./release_notes.md
           releaseCommitish: ${{ github.sha }}
         env:
