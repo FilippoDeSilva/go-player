@@ -98,6 +98,11 @@ see `AGENTS.md` §5.
 
 ## Status
 
-Early scaffold: app shell, workspace layout, playback abstraction, and
-tooling are in place. Playback backend (libmpv), subtitle domain, AI
-providers, and model management are not yet implemented.
+**v0.1.0** — Initial release with desktop playback:
+
+- ✅ Windows: Full video + audio playback
+- ✅ Linux: Full video + audio playback (.deb package)
+- ⚠️ macOS: Audio-only (video surface pending)
+
+AI subtitle features (whisper.cpp, translation, model management) are
+planned for future releases. See `CHANGELOG.md` for details.

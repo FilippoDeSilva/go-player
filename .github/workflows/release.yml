@@ -84,6 +84,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
+          releaseBodyPath: ./RELEASE_NOTES_${{ github.ref_name }}.md
           releaseCommitish: ${{ github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
