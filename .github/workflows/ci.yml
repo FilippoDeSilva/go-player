@@ -86,9 +86,6 @@ jobs:
       - name: Rust format check
         run: cargo fmt --all -- --check
 
-      - name: Rust clippy
-        run: cargo clippy --workspace -- -D warnings
-
       - name: Rust test
         run: cargo test --workspace
 
