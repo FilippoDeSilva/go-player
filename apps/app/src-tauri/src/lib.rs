@@ -534,19 +534,6 @@ fn open_media_impl(
     #[cfg(target_os = "linux")]
     gtk_apply_visibility(state);
 
-    // Audio-only: the window should be opaque (no native surface underneath)
-    // to avoid compositing artifacts with software rendering. Video keeps
-    // the transparent window so the GL surface shows through.
-    #[cfg(target_os = "linux")]
-    if !has_video {
-        use gtk::prelude::WidgetExt as _;
-        if let Some(wv) = window.app_handle().get_webview_window("main") {
-            if let Ok(win) = wv.as_ref().window().gtk_window() {
-                win.set_app_paintable(false);
-            }
-        }
-    }
-
     // Cover art comes from the file's tags / sidecar image — not from
     // mpv's rendered window, so it works regardless of surface state.
     // Returned as a ready-to-use data URL (mime included).
