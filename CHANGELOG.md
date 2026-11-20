@@ -2,7 +2,7 @@
 
 # Version headings are generated from git tags; do not edit released sections.
 
-## [0.1.0] - 2026-11-20
+## [1.0.0] - 2026-11-20
 
 ### Added
 

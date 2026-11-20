@@ -101,7 +101,7 @@ see `AGENTS.md` §5.
 
 ## Status
 
-**v0.1.0** — Initial release with desktop playback:
+**v1.0.0** — First stable release with desktop playback:
 
 - ✅ Windows: Full video + audio playback
 - ✅ Linux: Full video + audio playback (.deb package)

@@ -1,8 +1,8 @@
-# Go Player v0.1.0
+# Go Player v1.0.0
 
-Initial release with cross-platform desktop playback.
+First stable release with cross-platform desktop playback.
 
-![Go Player Video Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/video-playback.png)
+![Go Player Video Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v1.0.0/docs/screenshots/video-playback.png)
 
 ## What's New
 
@@ -24,9 +24,9 @@ Initial release with cross-platform desktop playback.
 
 ### UI/UX
 
-![Go Player Music Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/music-playback.png)
+![Go Player Music Playback](https://raw.githubusercontent.com/filippodesilva/go-player/v1.0.0/docs/screenshots/music-playback.png)
 
-![Go Player Video with Subtitles](https://raw.githubusercontent.com/filippodesilva/go-player/v0.1.0/docs/screenshots/video-subtitles.png)
+![Go Player Video with Subtitles](https://raw.githubusercontent.com/filippodesilva/go-player/v1.0.0/docs/screenshots/video-subtitles.png)
 
 - Modern dark-first design (Midnight / OLED / Light themes)
 - Auto-hiding controls (3s idle)

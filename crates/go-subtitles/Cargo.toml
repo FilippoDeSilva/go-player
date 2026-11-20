@@ -1,6 +1,6 @@
 [package]
 name = "go-subtitles"
-version = "0.1.0"
+version = "1.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Canonical subtitle domain, parsing, and export for Go Player"
