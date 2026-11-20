@@ -53,7 +53,7 @@ Download the MSI or NSIS installer from the release assets.
 Download the `.deb` package:
 
 ```bash
-sudo dpkg -i go-player_0.1.0_amd64.deb
+sudo dpkg -i go-player_1.0.0_amd64.deb
 sudo apt-get install -f  # if dependencies are missing
 ```
 
