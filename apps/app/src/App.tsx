@@ -342,6 +342,10 @@ export default function App() {
       }
       return;
     }
+    // Stop any previous playback before opening new media
+    if (media()) {
+      await invoke("media_stop").catch(() => {});
+    }
     try {
       setMedia(await invoke<MediaInfoDto>("open_media", { path, hasVideo: !isAudio(path) }));
       setMediaKind(isAudio(path) ? "audio" : "video");
@@ -362,14 +366,14 @@ export default function App() {
   const seekPct = () => (dur() ? (pos() / dur()) * 100 : 0);
 
   const topBarClass = () =>
-    `absolute inset-x-0 top-0 z-30 transition-[opacity,transform] duration-300 ease-out ${
+    `absolute inset-x-0 top-0 z-30 transition-opacity duration-300 ease-out ${
       barsShown() ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"
-    }`;
+    } ${mediaKind() === "audio" ? "bg-[var(--bg)]" : ""}`;
 
   const bottomBarClass = () =>
-    `absolute inset-x-0 bottom-0 z-30 transition-[opacity,transform] duration-300 ease-out ${
+    `absolute inset-x-0 bottom-0 z-30 transition-opacity duration-300 ease-out ${
       barsShown() ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-8 opacity-0"
-    }`;
+    } ${mediaKind() === "audio" ? "bg-[var(--bg)]" : ""}`;
 
   return (
     <main
@@ -467,7 +471,10 @@ export default function App() {
           class="flex h-full items-center gap-2 border-b px-3"
           style={{
             "border-color": "var(--border)",
-            background: "color-mix(in srgb, var(--bg) 38%, transparent)",
+            background:
+              mediaKind() === "audio"
+                ? "var(--bg)"
+                : "color-mix(in srgb, var(--bg) 38%, transparent)",
             "-webkit-app-region": "drag",
           }}
           data-tauri-drag-region
@@ -552,7 +559,10 @@ export default function App() {
               class="border-t px-4 py-1.5 text-[11px]"
               style={{
                 "border-color": "var(--border)",
-                background: "color-mix(in srgb, var(--bg) 38%, transparent)",
+                background:
+                  mediaKind() === "audio"
+                    ? "var(--bg)"
+                    : "color-mix(in srgb, var(--bg) 38%, transparent)",
                 color: "var(--text-dim)",
               }}
             >
@@ -570,7 +580,10 @@ export default function App() {
               style={{
                 "border-color": "var(--border)",
                 "border-top-color": "#ef444466",
-                background: "color-mix(in srgb, #7f1d1d 45%, transparent)",
+                background:
+                  mediaKind() === "audio"
+                    ? "var(--bg)"
+                    : "color-mix(in srgb, #7f1d1d 45%, transparent)",
                 color: "#fca5a5",
               }}
             >
@@ -584,7 +597,10 @@ export default function App() {
           class="flex h-25 shrink-0 flex-col border-t"
           style={{
             "border-color": "var(--border)",
-            background: "color-mix(in srgb, var(--bg) 38%, transparent)",
+            background:
+              mediaKind() === "audio"
+                ? "var(--bg)"
+                : "color-mix(in srgb, var(--bg) 38%, transparent)",
           }}
         >
           {/* Seek row */}
