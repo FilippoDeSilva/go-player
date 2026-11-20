@@ -108,8 +108,40 @@ fn provision_unix(lib_parent: &Path, _repo_root: &Path, target: &str) {
         );
         return;
     };
-    let (link_dir, lib) = found;
+    let (_, lib) = found;
 
-    println!("cargo:rustc-link-search=native={}", link_dir.display());
+    // Emit a search path for every provisioned lib dir: libmpv's own
+    // ffmpeg/libass/placebo dependencies live in `lib/` while libmpv.so
+    // itself sits in a multiarch subdir. Without `lib/` on the link
+    // search path, ld cannot resolve libmpv's versioned ffmpeg symbols
+    // unless LD_LIBRARY_PATH happens to be set.
+    for dir in &search_dirs {
+        println!("cargo:rustc-link-search=native={}", dir.display());
+    }
+
+    // libmpv's ffmpeg/libass/placebo dependencies are resolved by ld
+    // through -L only for direct -l flags; a shared lib's own NEEDED
+    // entries need the libs on the link line (or -rpath-link). Link
+    // the bundled copies explicitly so versioned symbols resolve
+    // without LD_LIBRARY_PATH. Only emit for libs we actually
+    // provisioned — macOS builds ffmpeg statically and has no .so.
+    if target.contains("linux") {
+        for name in [
+            "avcodec",
+            "avfilter",
+            "avformat",
+            "avutil",
+            "swresample",
+            "swscale",
+            "placebo",
+            "ass",
+        ] {
+            let soname = format!("lib{name}.so");
+            if search_dirs.iter().any(|d| d.join(&soname).exists()) {
+                println!("cargo:rustc-link-lib=dylib={name}");
+            }
+        }
+    }
+
     println!("cargo:rerun-if-changed={}", lib.display());
 }

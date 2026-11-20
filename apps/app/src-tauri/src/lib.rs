@@ -26,7 +26,8 @@ struct AppState {
     /// so mpv's cleared (grey) frame never shows.
     #[cfg(any(windows, target_os = "linux"))]
     surface_forced_hidden: Mutex<bool>,
-    /// GL surface widget handle (GtkGLArea below the webview).
+    /// GL surface widget handle (GtkGLArea below the webview) — the
+    /// Linux video path on both X11 and Wayland.
     #[cfg(target_os = "linux")]
     gtk_surface: Mutex<Option<video_surface_gtk::SurfaceHandle>>,
     /// Whether the current engine renders via the GL surface
@@ -286,9 +287,23 @@ fn wire_engine_callbacks(engine: &MpvPlaybackEngine, app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn open_media(
+async fn open_media(
     window: Window,
-    state: State<AppState>,
+    state: State<'_, AppState>,
+    path: String,
+    has_video: bool,
+) -> Result<MediaInfoDto, String> {
+    // Async so the body runs on the async runtime, NOT the GTK main
+    // thread: the GL-surface wait below blocks until the GtkGLArea
+    // render callback (a main-thread callback) creates mpv's render
+    // context. A sync command would deadlock that wait against
+    // itself.
+    open_media_impl(window, state.inner(), path, has_video)
+}
+
+fn open_media_impl(
+    window: Window,
+    state: &AppState,
     path: String,
     has_video: bool,
 ) -> Result<MediaInfoDto, String> {
@@ -324,8 +339,8 @@ fn open_media(
         {
             // GL render API path: vo=libmpv draws into a GtkGLArea
             // placed below the webview — works on X11 and Wayland
-            // alike. Audio files use vo=null since no frames are
-            // produced anyway.
+            // alike, and keeps DOM controls above the video. Audio
+            // files use vo=null since no frames are produced.
             ensure_gtk_surface(window.app_handle(), &window);
             let engine = if has_video {
                 MpvPlaybackEngine::with_gl_surface()
@@ -425,6 +440,7 @@ fn open_media(
         .open(&src)
         .map_err(|e| format!("open failed for {}: {e}", src.display()))?;
     eprintln!("[go-player] opened {}", src.display());
+    eprintln!("[go-player] render path: {}", engine.render_debug_info());
 
     // Re-assert surface visibility for the newly opened file — mpv may
     // have recreated its child window during load.
@@ -632,7 +648,7 @@ pub fn run() {
                     if let Some(webview) = app.get_webview_window("main") {
                         let window = webview.as_ref().window();
                         let state = app.state::<AppState>();
-                        let _ = open_media(window, state, path, true);
+                        let _ = open_media_impl(window, state.inner(), path, true);
                     }
                 });
             }

@@ -59,6 +59,28 @@ fn current_draw_fbo() -> i32 {
     v
 }
 
+/// Query `GL_RENDERER` for diagnostics — must be called with a GL
+/// context current (inside the render signal).
+fn gl_renderer_string() -> String {
+    // GL_RENDERER
+    const GL_RENDERER: u32 = 0x1F01;
+    type GetString = unsafe extern "C" fn(u32) -> *const std::ffi::c_char;
+    let p = gl_get_proc_address(&(), "glGetString");
+    if p.is_null() {
+        return "?".to_string();
+    }
+    let f: GetString = unsafe { std::mem::transmute(p) };
+    // Safety: valid GL entry point, context is current.
+    unsafe {
+        let r = f(GL_RENDERER);
+        if r.is_null() {
+            "?".to_string()
+        } else {
+            std::ffi::CStr::from_ptr(r).to_string_lossy().into_owned()
+        }
+    }
+}
+
 /// Rebuild a non-owning `GLArea` wrapper on the GTK main thread.
 ///
 /// # Safety
@@ -166,7 +188,14 @@ fn install_on_main(app: &AppHandle, window: &Window) {
     gl_area.set_auto_render(false);
     gl_area.set_hexpand(true);
     gl_area.set_vexpand(true);
-    gl_area.set_has_depth_buffer(true);
+    // Match the proven tauri-video-plugin GtkGLArea configuration:
+    // opaque output (alpha would composite as invisible over the
+    // transparent webview), desktop GL 3.2, no depth/stencil.
+    gl_area.set_has_alpha(false);
+    gl_area.set_has_depth_buffer(false);
+    gl_area.set_has_stencil_buffer(false);
+    gl_area.set_use_es(false);
+    gl_area.set_required_version(3, 2);
     gl_area.set_visible(false);
     let area_ptr: *mut gtk::ffi::GtkGLArea = gl_area.to_glib_none().0;
     let area_ptr = area_ptr as usize;
@@ -185,7 +214,11 @@ fn install_on_main(app: &AppHandle, window: &Window) {
         let render_ctx = Rc::clone(&render_ctx);
         let frame_pending = std::sync::Arc::clone(&frame_pending);
         let last_size = Rc::clone(&last_size);
-        gl_area.connect_render(move |area, _gdk_ctx| {
+        gl_area.connect_render(move |area, gdk_ctx| {
+            // Ensure the widget's own GL context is current — epoxy
+            // resolves functions against whatever context is current,
+            // and another GL user (e.g. the webview) may have stolen it.
+            gdk_ctx.make_current();
             let w = area.allocated_width();
             let h = area.allocated_height();
             if w <= 0 || h <= 0 {
@@ -235,6 +268,7 @@ fn install_on_main(app: &AppHandle, window: &Window) {
                             .state::<AppState>()
                             .render_ctx_id
                             .store(id, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("[go-player] gl renderer: {}", gl_renderer_string());
                     }
                     Err(e) => {
                         eprintln!("[go-player] gl render context failed: {e}");
@@ -288,6 +322,15 @@ fn install_on_main(app: &AppHandle, window: &Window) {
     // loadfile).
     let visible = crate::effective_surface_visible(&state);
     gl_area.set_visible(visible);
+
+    // Eagerly realize + bind the GL context and surface any creation
+    // error now — discovering a broken GL stack inside the render
+    // callback would be too late and silent.
+    gl_area.realize();
+    gl_area.make_current();
+    if let Some(err) = gl_area.error() {
+        eprintln!("[go-player] gtk surface: GL context error: {err}");
+    }
     gl_area.queue_render();
 
     let handle = SurfaceHandle {

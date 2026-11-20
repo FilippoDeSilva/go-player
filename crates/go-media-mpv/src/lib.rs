@@ -175,6 +175,34 @@ impl MpvPlaybackEngine {
         self.instance_id
     }
 
+    /// One-line diagnostic of the active decode/render path, for logs.
+    /// Answers "are we actually on the GPU?" — `hwdec-current` shows
+    /// the decoder backend (e.g. `h264 (vaapi)` vs `no`), `vo` the
+    /// video output, and the counters expose dropped frames.
+    pub fn render_debug_info(&self) -> String {
+        let get = |name: &str| -> String {
+            self.mpv
+                .get_property::<String>(name)
+                .unwrap_or_else(|_| "?".to_string())
+        };
+        let fps = self
+            .mpv
+            .get_property::<f64>("estimated-vf-fps")
+            .unwrap_or(0.0);
+        let drops = self
+            .mpv
+            .get_property::<i64>("frame-drop-count")
+            .unwrap_or(-1);
+        format!(
+            "vo={} hwdec={} codec={} fps={:.1} drops={}",
+            get("vo"),
+            get("hwdec-current"),
+            get("video-codec"),
+            fps,
+            drops
+        )
+    }
+
     /// Shared handle to the underlying mpv instance, for hosts that
     /// must create render contexts without holding the engine (the
     /// engine mutex may be locked during `open`).
