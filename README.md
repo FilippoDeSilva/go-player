@@ -8,6 +8,10 @@ them — all offline-first once models are installed.
 
 ![Go Player Video Playback](docs/screenshots/video-playback.png)
 
+![Go Player Music Playback](docs/screenshots/music-playback.png)
+
+![Go Player Video with Subtitles](docs/screenshots/video-subtitles.png)
+
 Playback comes first: the player must be excellent even when AI
 features are unavailable.
 
