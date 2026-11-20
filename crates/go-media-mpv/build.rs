@@ -119,6 +119,20 @@ fn provision_unix(lib_parent: &Path, _repo_root: &Path, target: &str) {
         println!("cargo:rustc-link-search=native={}", dir.display());
     }
 
+    // Dev-profile binaries/tests of THIS crate (e.g. tests/headless.rs)
+    // have no $ORIGIN anchor to the provisioned libs — give them an
+    // explicit rpath, same as the app crate's build.rs does. RUNPATH
+    // suffices: transitive deps are covered by the $ORIGIN RUNPATH we
+    // patch onto the bundled .so files themselves (ensure_soname_rpath).
+    // Skipped for release: packaged artifacts resolve via
+    // .cargo/config.toml RUNPATH and must not carry build-machine
+    // absolute paths.
+    if env::var("PROFILE").as_deref() != Ok("release") && target.contains("linux") {
+        for dir in &search_dirs {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+        }
+    }
+
     // libmpv's ffmpeg/libass/placebo dependencies are resolved by ld
     // through -L only for direct -l flags; a shared lib's own NEEDED
     // entries need the libs on the link line (or -rpath-link). Link
@@ -141,7 +155,81 @@ fn provision_unix(lib_parent: &Path, _repo_root: &Path, target: &str) {
                 println!("cargo:rustc-link-lib=dylib={name}");
             }
         }
+
+        ensure_soname_rpath(&search_dirs);
     }
 
     println!("cargo:rerun-if-changed={}", lib.display());
+}
+
+/// Give every provisioned shared library an `$ORIGIN`-relative
+/// RUNPATH so it finds its bundled siblings regardless of which
+/// binary loads it. The provisioned layout splits libs across
+/// `lib/` (ffmpeg) and `lib/<multiarch>/` (mpv, ass, placebo,
+/// wayland), and the built .so files carry no rpath of their own —
+/// without this, consumers that don't link every dep directly
+/// (e.g. `tests/headless.rs`, which only NEEDs libmpv) fail at
+/// runtime with "libavcodec.so.61: cannot open shared object".
+///
+/// `$ORIGIN/..` covers the parent dir so `lib/<multiarch>/libmpv`
+/// finds ffmpeg in `lib/`; in the flattened installer layout all
+/// libs share one dir and `$ORIGIN` alone suffices (`$ORIGIN/..`
+/// is then a harmless extra entry).
+///
+/// No-op when `patchelf` is unavailable or the rpath is already set.
+fn ensure_soname_rpath(search_dirs: &[PathBuf]) {
+    if std::process::Command::new("patchelf")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        println!("cargo:warning=patchelf not found — bundled libs keep their empty RUNPATH");
+        return;
+    }
+    for dir in search_dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // Skip symlinks (soname links) — patch the real files.
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !meta.is_file() || meta.file_type().is_symlink() {
+                continue;
+            }
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if !name.contains(".so") {
+                continue;
+            }
+            let current = std::process::Command::new("patchelf")
+                .arg("--print-rpath")
+                .arg(&path)
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            // Skip only when already correct — a bare "$ORIGIN" (or a
+            // corrupted value like "RIGIN:") still needs the parent
+            // dir for the split lib/ + lib/<multiarch>/ layout.
+            if current.trim() == "$ORIGIN:$ORIGIN/.." {
+                continue;
+            }
+            let status = std::process::Command::new("patchelf")
+                .arg("--set-rpath")
+                .arg("$ORIGIN:$ORIGIN/..")
+                .arg(&path)
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    println!("cargo:warning=patched RUNPATH on {}", path.display());
+                }
+                _ => println!(
+                    "cargo:warning=failed to patch RUNPATH on {}",
+                    path.display()
+                ),
+            }
+        }
+    }
 }

@@ -274,11 +274,16 @@ stage_bundle() {
   cp -a $(find "$PREFIX/lib" -name '*.so*' | sort -u) "$STAGE_DIR"/
 
   # FFmpeg's configure does not propagate --extra-ldflags into shared
-  # library links, so its .so files carry no RUNPATH and could not find
-  # their siblings once relocated. Force $ORIGIN on everything staged —
-  # the meson-built libs already have it, so this is a no-op for them.
-  find "$STAGE_DIR" -maxdepth 1 -type f -name '*.so*' \
-    -exec patchelf --set-rpath '$ORIGIN' {} +
+  # library links, and where it does the $ORIGIN token can get mangled
+  # by configure's eval — staged .so files have been observed with a
+  # corrupted "RIGIN:" RUNPATH. Force a correct rpath on EVERYTHING
+  # staged, recursively: libs live split across lib/ (ffmpeg) and
+  # lib/<multiarch>/ (mpv/ass/placebo/wayland), so each needs $ORIGIN
+  # for siblings plus $ORIGIN/.. to reach the other dir. In the
+  # flattened installer layout $ORIGIN alone suffices and the extra
+  # entry is harmless.
+  find "$STAGE_DIR" -type f -name '*.so*' \
+    -exec patchelf --set-rpath '$ORIGIN:$ORIGIN/..' {} +
   # mpv client headers (useful for debugging / future bindgen)
   mkdir -p "$REPO_ROOT/native/mpv/$TARGET/include"
   cp -r "$PREFIX/include/mpv" "$REPO_ROOT/native/mpv/$TARGET/include/" 2>/dev/null || true
