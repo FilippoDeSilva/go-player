@@ -1422,6 +1422,7 @@ name = "go-player"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "cairo-rs",
  "go-media",
  "go-media-mpv",
  "go-subtitles",
@@ -1434,6 +1435,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "webkit2gtk",
  "windows",
 ]
 

@@ -271,7 +271,12 @@ stage_bundle() {
   find "$PREFIX/lib" -type f -name '*.so*' \
     -exec strip --strip-unneeded {} + 2>/dev/null || true
   # shellcheck disable=SC2046
-  cp -a $(find "$PREFIX/lib" -name '*.so*' | sort -u) "$STAGE_DIR"/
+  # libwayland-* are deliberately EXCLUDED: they are system libraries
+  # (present wherever GTK/WebKitGTK run) and bundling them is actively
+  # harmful — libmpv and libwebkit2gtk share the same sonames, so our
+  # older bundled copies would be loaded process-wide and break
+  # WebKitGTK's EGL/accelerated-compositing init.
+  cp -a $(find "$PREFIX/lib" -name '*.so*' ! -name 'libwayland*' | sort -u) "$STAGE_DIR"/
 
   # FFmpeg's configure does not propagate --extra-ldflags into shared
   # library links, and where it does the $ORIGIN token can get mangled

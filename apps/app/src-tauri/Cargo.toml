@@ -31,6 +31,8 @@ go-tags = { path = "../../../crates/go-tags" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+webkit2gtk = "2"
+cairo-rs = { version = "0.18", features = ["png"] }
 libloading = "0.8"
 
 [target.'cfg(windows)'.dependencies]

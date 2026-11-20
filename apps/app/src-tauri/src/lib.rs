@@ -240,7 +240,7 @@ fn wait_for_gl_render_context(
         handle.set_visible(true);
         handle.request_draw();
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while state.render_ctx_id.load(Ordering::Relaxed) != engine_id {
         if std::time::Instant::now() >= deadline {
             eprintln!("[go-player] timed out waiting for gl render context");
@@ -299,6 +299,93 @@ async fn open_media(
     // context. A sync command would deadlock that wait against
     // itself.
     open_media_impl(window, state.inner(), path, has_video)
+}
+
+/// Dev diagnostic (Linux): render the webview's current content to a
+/// PNG. Proves whether WebKit is producing UI pixels regardless of
+/// window visibility or compositor state — used while debugging the
+/// blank/transparent webview on Linux.
+#[cfg(target_os = "linux")]
+#[allow(deprecated)] // run_javascript is fine for this dev diagnostic
+#[tauri::command]
+async fn debug_webview_snapshot(window: Window, _out: String) -> Result<(), String> {
+    use gtk::glib::Cast as _;
+    use gtk::prelude::ContainerExt as _;
+    use webkit2gtk::WebViewExt as _;
+    let app = window.app_handle().clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        // Everything GTK/WebKit stays on the main thread; only a plain
+        // Result crosses back (glib objects are !Send). The snapshot
+        // callback fires later on this same main context, so it does
+        // the PNG write itself and reports through `tx`.
+        let webview = app2.get_webview_window("main").and_then(|wv| {
+            wv.as_ref()
+                .window()
+                .default_vbox()
+                .ok()?
+                .children()
+                .into_iter()
+                .find_map(|c| c.downcast::<webkit2gtk::WebView>().ok())
+        });
+        match webview {
+            Some(webview) => {
+                let wv2 = webview.clone();
+                let out2 = _out.clone();
+                webview.run_javascript(
+                "JSON.stringify({rs:document.readyState,title:document.title,\
+                 rootKids:document.getElementById('root')?document.getElementById('root').children.length:-1,\
+                 bodyKids:document.body.children.length,scripts:document.scripts.length,\
+                 bodyBg:getComputedStyle(document.body).backgroundColor})",
+                Option::<&webkit2gtk::gio::Cancellable>::None,
+                move |result| {
+                    let r = result.map(|res| {
+                        res.js_value()
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "<no value>".to_string())
+                    });
+                    eprintln!("[go-player] webview js: {:?}", r);
+                    let _ = tx.send(r.map_err(|e| e.to_string()));
+                    // Also snapshot pixels — proves actual paint, not
+                    // just DOM presence.
+                    wv2.snapshot(
+                        webkit2gtk::SnapshotRegion::FullDocument,
+                        webkit2gtk::SnapshotOptions::empty(),
+                        Option::<&webkit2gtk::gio::Cancellable>::None,
+                        move |snap| match snap {
+                            Ok(surface) => match std::fs::File::create(&out2) {
+                                Ok(mut f) => {
+                                    if let Err(e) = surface.write_to_png(&mut f) {
+                                        eprintln!("[go-player] snapshot write failed: {e}");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[go-player] snapshot file failed: {e}");
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("[go-player] snapshot failed: {e}");
+                            }
+                        },
+                    );
+                },
+            )
+            },
+            None => {
+                let _ = tx.send(Err("webview widget not found".to_string()));
+            }
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    let _ = rx.recv().map_err(|e| e.to_string())??;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+async fn debug_webview_snapshot(_window: Window, _out: String) -> Result<(), String> {
+    Err("unsupported on this platform".to_string())
 }
 
 fn open_media_impl(
@@ -393,7 +480,7 @@ fn open_media_impl(
             && let Some(s) = *surface
         {
             unsafe {
-                video_surface::set_visible(s, effective_surface_visible(&state));
+                video_surface::set_visible(s, effective_surface_visible(state));
             }
         }
     }
@@ -405,7 +492,7 @@ fn open_media_impl(
         if let Ok(mut g) = state.surface_forced_hidden.lock() {
             *g = false;
         }
-        gtk_apply_visibility(&state);
+        gtk_apply_visibility(state);
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     let _ = has_video;
@@ -419,7 +506,7 @@ fn open_media_impl(
         if has_video {
             let engine_id = guard.as_ref().map(|e| e.instance_id());
             let ready = engine_id
-                .map(|id| wait_for_gl_render_context(&state, id, window.app_handle(), &window))
+                .map(|id| wait_for_gl_render_context(state, id, window.app_handle(), &window))
                 .unwrap_or(false);
             if !ready {
                 eprintln!("[go-player] gl render context unavailable — audio-only fallback");
@@ -445,7 +532,7 @@ fn open_media_impl(
     // Re-assert surface visibility for the newly opened file — mpv may
     // have recreated its child window during load.
     #[cfg(target_os = "linux")]
-    gtk_apply_visibility(&state);
+    gtk_apply_visibility(state);
 
     // Cover art comes from the file's tags / sidecar image — not from
     // mpv's rendered window, so it works regardless of surface state.
@@ -667,6 +754,7 @@ pub fn run() {
             media_set_muted,
             media_surface_hide,
             media_surface_show,
+            debug_webview_snapshot,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Resized(_) = event {
