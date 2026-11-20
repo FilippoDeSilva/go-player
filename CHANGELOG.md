@@ -6,6 +6,7 @@
 
 ### Added
 
+- **License:** MIT License - see [LICENSE](LICENSE) for details
 - **Desktop shell:** Tauri 2 with Solid + TypeScript + Tailwind CSS v4
 - **Cross-platform playback:** libmpv backend with native video rendering
   - Windows: HWND embedding (no flicker)

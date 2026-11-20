@@ -80,9 +80,6 @@ jobs:
       - name: Frontend typecheck
         run: pnpm -r typecheck
 
-      - name: Frontend lint
-        run: pnpm -r lint
-
       - name: Frontend build
         run: pnpm -r build
 

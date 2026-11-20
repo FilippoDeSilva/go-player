@@ -7,9 +7,7 @@ locally or via explicit cloud providers, and edit/synchronize/export
 them — all offline-first once models are installed.
 
 ![Go Player Video Playback](docs/screenshots/video-playback.png)
-
 ![Go Player Video with Subtitles](docs/screenshots/video-subtitles.png)
-
 ![Go Player Music Playback](docs/screenshots/music-playback.png)
 
 ## Tech stack
@@ -98,6 +96,10 @@ see `AGENTS.md` §5.
   guidance for AI agents working on this repo.
 - `docs/decisions/` — ADRs for significant technical decisions
   (e.g., `0001-playback-engine.md`).
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Status
 
