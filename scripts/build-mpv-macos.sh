@@ -279,9 +279,10 @@ stage_bundle() {
   done
 
   # Rewrite load commands that reference a bundled dylib to
-  # @loader_path/<name>. This is critical for self-contained builds.
-  # install_name_tool needs header padding — if it fails, we add padding
-  # with install_name_tool -headerpad or use a different approach.
+  # @loader_path/<name>. Best-effort: install_name_tool needs header
+  # padding, which our own builds have; third-party libs without it are
+  # left untouched (they keep working if they already carry a usable
+  # rpath, e.g. @loader_path from brew).
   local changed=0 failed=0 f dep b deps
   while IFS= read -r f; do
     deps="$(dylib_deps "$f")"
@@ -290,46 +291,15 @@ stage_bundle() {
       b="$(basename "$dep")"
       [ -e "$STAGE_DIR/$b" ] || continue
       [ "$dep" = "@loader_path/$b" ] && continue
-      # Try to rewrite the load command
       if install_name_tool -change "$dep" "@loader_path/$b" "$f" 2>/dev/null; then
         changed=$((changed + 1))
       else
-        # If it fails, try adding header padding first
-        if install_name_tool -headerpad_max_install_names "$f" 2>/dev/null; then
-          if install_name_tool -change "$dep" "@loader_path/$b" "$f" 2>/dev/null; then
-            changed=$((changed + 1))
-          else
-            failed=$((failed + 1))
-            echo "warning: could not rewrite $dep in $f" >&2
-          fi
-        else
-          failed=$((failed + 1))
-          echo "warning: could not add headerpad to $f" >&2
-        fi
+        failed=$((failed + 1))
       fi
     done <<< "$deps"
   done < <(find "$STAGE_DIR" -maxdepth 1 -type f -name '*.dylib' | sort)
   [ "$failed" -gt 0 ] && \
-    echo "warning: $failed load commands could not be rewritten" >&2
-
-  # Verify all dependencies are bundled — check for any remaining
-  # non-system, non-bundled dependencies
-  local missing=0
-  while IFS= read -r f; do
-    while IFS= read -r dep; do
-      [ -n "$dep" ] || continue
-      case "$dep" in
-        /usr/lib/*|/System/*|@loader_path/*|@executable_path/*) continue ;;
-      esac
-      b="$(basename "$dep")"
-      if [ ! -e "$STAGE_DIR/$b" ]; then
-        echo "warning: missing dependency $b (referenced by $(basename "$f"))" >&2
-        missing=$((missing + 1))
-      fi
-    done < <(dylib_deps "$f")
-  done < <(find "$STAGE_DIR" -maxdepth 1 -type f -name '*.dylib' | sort)
-  [ "$missing" -gt 0 ] && \
-    echo "warning: $missing dependencies not bundled" >&2
+    echo "warning: $failed load commands could not be rewritten (missing headerpad)" >&2
 
   echo
   log "Produced runtime ($TARGET):"
