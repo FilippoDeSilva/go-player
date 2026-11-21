@@ -26,9 +26,6 @@ them — all offline-first once models are installed.
 | Persistence    | SQLite (planned)                                           |
 | Package mgrs   | pnpm (JS) + cargo (Rust), versions pinned via mise         |
 
-Desktop (Windows, Linux, macOS) is the first target; Android/iOS come
-later through Tauri 2 mobile.
-
 ## Prerequisites
 
 - **Windows:** Visual Studio 2022 Build Tools with the _Desktop
